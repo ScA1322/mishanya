@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { errorText, post } from "../api";
 import { useMeta } from "../App";
 import { useModuleConfig, usePreview, useUnsavedWarning } from "../hooks";
+import { Icon } from "../icons";
 import {
   Card, ChannelSelect, DiscordPreview, ErrorBox, Field, Loading, Modal, MultiChannelSelect, MultiRoleSelect, NumberInput, PageHeader,
   SaveBar, TemplateInput, ToggleRow, useConfirm, useToast,
@@ -173,8 +174,8 @@ export default function Leveling() {
 
         <Card title="Данные" subtitle="Экспорт и импорт статистики в формате JSON, полный сброс">
           <div className="row">
-            <button className="btn" onClick={exportData}>⬇ Экспорт JSON</button>
-            <button className="btn" onClick={() => fileRef.current?.click()}>⬆ Импорт JSON</button>
+            <button className="btn" onClick={exportData}><Icon name="download" size={15} />Экспорт JSON</button>
+            <button className="btn" onClick={() => fileRef.current?.click()}><Icon name="upload" size={15} />Импорт JSON</button>
             <input ref={fileRef} type="file" accept="application/json,.json" hidden
               onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) readImport(f); }} />
             <span className="spacer" />

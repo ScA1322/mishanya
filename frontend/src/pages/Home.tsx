@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useEffect } from "react";
 import { useApi } from "../hooks";
+import { Icon, type IconName } from "../icons";
 import { Card, Empty, ErrorBox, Loading, PageHeader, fmtBytes, fmtDate } from "../ui";
 
 interface Status {
@@ -16,6 +17,47 @@ interface Status {
   errors: { time: string; level: string; source: string; message: string }[];
   recent_events: { id: number; guild_id: string; guild_name: string; type: string; summary: string; created_at: string }[];
   settings: { log_retention_days: number; auto_backup_enabled: boolean; auto_backup_interval_hours: number; store_message_content: boolean };
+}
+
+const QUICK: [string, IconName, string][] = [
+  ["/servers", "servers", "Серверы и их модули"],
+  ["/settings", "database", "Резервные копии и общие настройки"],
+  ["/diagnostics", "activity", "Проверка прав бота и конфигурации"],
+  ["/help", "help", "Справка по настройке"],
+];
+
+/** Чек-лист первоначальной настройки: показывается, пока бот не подключён или не добавлен ни на один сервер. */
+function Onboarding({ s }: { s: Status }) {
+  const b = s.bot;
+  const steps: { done: boolean; title: string; text: React.ReactNode }[] = [
+    { done: b.token_configured, title: "Токен бота в .env",
+      text: <>Developer Portal → Bot → Reset Token, затем строка <code>DISCORD_TOKEN=</code> в файле <code>.env</code> и перезапуск.</> },
+    { done: b.connected, title: "Подключение к Discord",
+      text: b.error && b.token_configured ? <span className="err-text">{b.error}</span>
+        : <>Включите Server Members и Message Content Intent в Developer Portal.</> },
+    { done: s.guilds.present > 0, title: "Бот добавлен на сервер",
+      text: b.invite_url ? <a href={b.invite_url} target="_blank" rel="noreferrer">Открыть ссылку-приглашение <Icon name="external" size={12} /></a>
+        : <>Ссылка-приглашение появится после подключения бота.</> },
+    { done: false, title: "Роль бота выше выдаваемых ролей",
+      text: <>Настройки сервера → Роли. Проверить права можно в разделе <Link to="/diagnostics">«Диагностика»</Link>.</> },
+  ];
+  const doneCount = steps.filter((x) => x.done).length;
+  return (
+    <section className="card onboarding">
+      <div className="card-header">
+        <div><h2>Первые шаги</h2><p>Выполнено {doneCount} из {steps.length - 1} обязательных · <Link to="/help">подробная инструкция</Link></p></div>
+        <div className="progress" style={{ width: 160 }}><div style={{ width: `${(doneCount / (steps.length - 1)) * 100}%` }} /></div>
+      </div>
+      <ol className="steps">
+        {steps.map((st, i) => (
+          <li key={i} className={st.done ? "done" : ""}>
+            <span className="step-mark">{st.done ? <Icon name="check" size={14} /> : i + 1}</span>
+            <div><div className="step-title">{st.title}</div><div className="small muted">{st.text}</div></div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
 function uptime(s: number) {
@@ -42,26 +84,20 @@ export default function Home() {
   return (
     <>
       <PageHeader title="Главная" subtitle="Состояние Mishanya и последние события"
-        actions={<button className="btn" onClick={reload}>Обновить</button>} />
+        actions={<button className="btn" onClick={reload}><Icon name="refresh" size={15} />Обновить</button>} />
 
-      {(!b.token_configured || b.error) && (
-        <div className={`alert ${b.token_configured ? "alert-err" : "alert-warn"}`} style={{ marginBottom: 16 }}>
-          <strong>{b.token_configured ? "Бот не подключён. " : "Первоначальная настройка. "}</strong>
-          {b.error}
-          {" "}<Link to="/help">Инструкция по настройке →</Link>
-        </div>
-      )}
+      {(!b.connected || s.guilds.present === 0) && <Onboarding s={s} />}
 
       <div className="grid grid-4">
-        <Card><div className="stat"><span className="stat-label">Discord-бот</span><span>{botBadge}</span>
+        <Card><div className="stat"><span className="stat-label"><Icon name="bot" size={15} />Discord-бот</span><span>{botBadge}</span>
           <span className="small muted">{b.user ?? "—"}</span></div></Card>
-        <Card><div className="stat"><span className="stat-label">Соединение с Discord</span>
+        <Card><div className="stat"><span className="stat-label"><Icon name="zap" size={15} />Соединение с Discord</span>
           <span className="stat-value">{b.latency_ms != null ? `${b.latency_ms} мс` : "—"}</span>
           <span className="small muted">Работает {uptime(s.uptime_seconds)}</span></div></Card>
-        <Card><div className="stat"><span className="stat-label">Серверы</span>
+        <Card><div className="stat"><span className="stat-label"><Icon name="servers" size={15} />Серверы</span>
           <span className="stat-value">{s.guilds.present}</span>
           <span className="small muted">{s.guilds.total - s.guilds.present > 0 ? `ещё ${s.guilds.total - s.guilds.present} с сохранёнными данными` : "все активны"}</span></div></Card>
-        <Card><div className="stat"><span className="stat-label">База данных</span>
+        <Card><div className="stat"><span className="stat-label"><Icon name="database" size={15} />База данных</span>
           <span>{s.db.ok ? <span className="badge badge-ok">Исправна</span> : <span className="badge badge-err">Ошибка</span>}</span>
           <span className="small muted">{s.db.ok ? `${fmtBytes(s.db.size_bytes)} · схема v${s.db.schema_version}` : s.db.error}</span></div></Card>
       </div>
@@ -112,11 +148,10 @@ export default function Home() {
         </Card>
         <Card title="Быстрые ссылки">
           <div className="stack" style={{ gap: 8 }}>
-            <Link to="/servers" className="btn" style={{ justifyContent: "flex-start" }}>🗂️ Серверы и их модули</Link>
-            <Link to="/settings" className="btn" style={{ justifyContent: "flex-start" }}>💾 Резервные копии и общие настройки</Link>
-            <Link to="/diagnostics" className="btn" style={{ justifyContent: "flex-start" }}>🩺 Проверка прав бота и конфигурации</Link>
-            <Link to="/help" className="btn" style={{ justifyContent: "flex-start" }}>❔ Справка по настройке</Link>
-            {b.invite_url && <a href={b.invite_url} target="_blank" rel="noreferrer" className="btn btn-primary" style={{ justifyContent: "flex-start" }}>➕ Пригласить Mishanya на сервер</a>}
+            {QUICK.map(([to, icon, label]) => (
+              <Link key={to} to={to} className="quick-link"><Icon name={icon} size={17} /><span className="spacer">{label}</span><Icon name="chevronDown" size={14} className="rot-270 muted" /></Link>
+            ))}
+            {b.invite_url && <a href={b.invite_url} target="_blank" rel="noreferrer" className="btn btn-primary"><Icon name="plus" size={15} />Пригласить Mishanya на сервер</a>}
           </div>
         </Card>
       </div>

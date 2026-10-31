@@ -1,9 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { errorText, get, post, setCsrf, setUnauthorizedHandler } from "./api";
 import { useApi } from "./hooks";
 import type { DiscordResources, GuildSummary, Meta } from "./types";
-import { ConfirmProvider, ErrorBox, GuildIcon, Loading, ResourcesCtx, ToastProvider, useToast } from "./ui";
+import { Icon, type IconName } from "./icons";
+import { ConfirmProvider, ErrorBox, GuildIcon, Loading, Picker, ResourcesCtx, ThemeToggle, ToastProvider, useToast } from "./ui";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Servers from "./pages/Servers";
@@ -27,57 +28,77 @@ export const useMeta = () => useContext(MetaCtx)!;
 const GuildsCtx = createContext<{ guilds: GuildSummary[]; reload: () => void }>({ guilds: [], reload: () => {} });
 export const useGuilds = () => useContext(GuildsCtx);
 
-const GLOBAL_NAV: [string, string, string][] = [
-  ["/", "🏠", "Главная"],
-  ["/servers", "🗂️", "Серверы"],
-  ["/settings", "⚙️", "Общие настройки"],
-  ["/diagnostics", "🩺", "Диагностика"],
-  ["/help", "❔", "Справка"],
+const GLOBAL_NAV: [string, IconName, string][] = [
+  ["/", "home", "Главная"],
+  ["/servers", "servers", "Серверы"],
+  ["/settings", "settings", "Общие настройки"],
+  ["/diagnostics", "activity", "Диагностика"],
+  ["/help", "help", "Справка"],
 ];
 
-const GUILD_NAV: [string, string, string][] = [
-  ["", "📊", "Обзор"],
-  ["leveling", "📈", "Уровни и XP"],
-  ["leaderboard", "🏆", "Таблица лидеров"],
-  ["rewards", "🎁", "Роли за уровни"],
-  ["moderation", "🛡️", "Модерация"],
-  ["automod", "🤖", "Автомодерация"],
-  ["welcome", "👋", "Приветствия"],
-  ["autoroles", "🎭", "Автороли"],
-  ["commands", "✨", "Команды"],
-  ["logs", "📜", "Журналы"],
+const GUILD_NAV: [string, IconName, string][] = [
+  ["", "dashboard", "Обзор"],
+  ["leveling", "trending", "Уровни и XP"],
+  ["leaderboard", "trophy", "Таблица лидеров"],
+  ["rewards", "gift", "Роли за уровни"],
+  ["moderation", "shield", "Модерация"],
+  ["automod", "bot", "Автомодерация"],
+  ["welcome", "userPlus", "Приветствия"],
+  ["autoroles", "tag", "Автороли"],
+  ["commands", "terminal", "Команды"],
+  ["logs", "file", "Журналы"],
 ];
+
+/** Выбор сервера в боковой панели: переключает сервер, оставаясь в том же разделе. */
+function GuildSwitcher({ guildId, section }: { guildId: string; section: string }) {
+  const { guilds } = useGuilds();
+  const navigate = useNavigate();
+  const items = guilds.map((g) => ({
+    id: g.id, label: g.name || g.id, group: g.present ? "Серверы" : "Бот покинул сервер",
+    hint: g.present ? (g.connected ? undefined : "нет связи") : "архив",
+  }));
+  const current = guilds.find((g) => g.id === guildId);
+  return (
+    <Picker items={items} value={guildId} searchPlaceholder="Поиск сервера…" emptyText="Сервер не найден"
+      onChange={(id) => id && id !== guildId && navigate(`/servers/${id}${section ? "/" + section : ""}`)}
+      trigger={
+        <span className="guild-switch">
+          <GuildIcon name={current?.name ?? "?"} url={current?.icon_url ?? null} small />
+          <span className="name">{current?.name ?? guildId}</span>
+          <Icon name="chevronsUpDown" size={14} className="muted" />
+        </span>
+      } />
+  );
+}
+
+function NavItem({ to, icon, label, onClick }: { to: string; icon: IconName; label: string; onClick: () => void }) {
+  return (
+    <NavLink to={to} end className="nav-link" onClick={onClick}>
+      <Icon name={icon} size={17} className="nav-icon" />{label}
+    </NavLink>
+  );
+}
 
 function Sidebar({ open, onNavigate, onLogout }: { open: boolean; onNavigate: () => void; onLogout: () => void }) {
-  const { guilds } = useGuilds();
   const loc = useLocation();
-  const match = loc.pathname.match(/^\/servers\/(\d+)/);
-  const guild = match ? guilds.find((g) => g.id === match[1]) : undefined;
+  const match = loc.pathname.match(/^\/servers\/(\d+)\/?([a-z]*)/);
   return (
     <nav className={`sidebar ${open ? "open" : ""}`} aria-label="Навигация">
       <div className="brand"><div className="brand-logo">M</div>Mishanya</div>
-      {GLOBAL_NAV.map(([to, icon, label]) => (
-        <NavLink key={to} to={to} end className="nav-link" onClick={onNavigate}>
-          <span className="nav-icon">{icon}</span>{label}
-        </NavLink>
-      ))}
+      {GLOBAL_NAV.map(([to, icon, label]) => <NavItem key={to} to={to} icon={icon} label={label} onClick={onNavigate} />)}
       {match && (
         <>
           <div className="nav-section">Сервер</div>
-          <div className="guild-switch">
-            <GuildIcon name={guild?.name ?? "?"} url={guild?.icon_url ?? null} small />
-            <span className="name">{guild?.name ?? match[1]}</span>
-          </div>
+          <GuildSwitcher guildId={match[1]} section={match[2]} />
           {GUILD_NAV.map(([to, icon, label]) => (
-            <NavLink key={to} to={`/servers/${match[1]}${to ? "/" + to : ""}`} end className="nav-link" onClick={onNavigate}>
-              <span className="nav-icon">{icon}</span>{label}
-            </NavLink>
+            <NavItem key={to} to={`/servers/${match[1]}${to ? "/" + to : ""}`} icon={icon} label={label} onClick={onNavigate} />
           ))}
         </>
       )}
       <div className="sidebar-footer">
-        <button className="btn btn-ghost" style={{ width: "100%", justifyContent: "flex-start" }} onClick={onLogout}>
-          <span className="nav-icon">↩</span>Выйти
+        <ThemeToggle />
+        <button className="nav-link nav-button" onClick={onLogout}>
+          <Icon name="logout" size={17} className="nav-icon" />Выйти
         </button>
       </div>
     </nav>
@@ -96,7 +117,8 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         {open && <div className="backdrop" onClick={() => setOpen(false)} />}
         <div className="main">
           <div className="topbar">
-            <button className="icon-btn" onClick={() => setOpen(true)} aria-label="Меню">☰</button>
+            <button className="icon-btn" onClick={() => setOpen(true)} aria-label="Меню"><Icon name="menu" size={20} /></button>
+            <div className="brand-logo brand-logo-sm">M</div>
             <strong>Mishanya</strong>
           </div>
           <main className="content">
@@ -117,7 +139,8 @@ function GuildScope() {
   return (
     <ResourcesCtx.Provider value={data!}>
       {!data!.connected && (
-        <div className="alert alert-warn" style={{ marginBottom: 16 }}>
+        <div className="alert alert-warn row" style={{ marginBottom: 16, flexWrap: "nowrap" }}>
+          <Icon name="alert" size={16} />
           Бот сейчас не подключён к этому серверу: списки каналов и ролей недоступны, но настройки можно менять — они применятся после подключения.
         </div>
       )}

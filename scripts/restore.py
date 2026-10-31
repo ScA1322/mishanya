@@ -21,7 +21,8 @@ def app_running(pid_file: Path) -> bool:
     pid = pid_file.read_text(encoding="ascii").strip()
     if not pid.isdigit():
         return False
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True,
+                         errors="replace").stdout
     return pid in out
 
 

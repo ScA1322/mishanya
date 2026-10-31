@@ -1,0 +1,4 @@
+# Пакетные файлы Windows должны иметь окончания строк CRLF, иначе cmd.exe
+# неверно обрабатывает метки и goto (в том числе при скачивании ZIP с GitHub).
+*.bat text eol=crlf
+*.cmd text eol=crlf

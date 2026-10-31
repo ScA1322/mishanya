@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { del, errorText, post } from "../api";
 import { useApi, useModuleConfig, useUnsavedWarning } from "../hooks";
+import { Icon } from "../icons";
 import type { Paged } from "../types";
 import {
   Card, ChannelSelect, Empty, ErrorBox, Field, Loading, NumberInput, PageHeader, Pagination, SaveBar, Tabs, Toggle, ToggleRow,
@@ -50,7 +51,7 @@ function Settings({ guildId }: { guildId: string }) {
         actions={<button className="btn btn-sm" disabled={d.warn_actions.length >= 20} onClick={() => c.update((x) => {
           const next = Math.max(0, ...x.warn_actions.map((a) => a.count)) + 1;
           x.warn_actions.push({ count: next, action: "timeout", duration_minutes: 60 });
-        })}>+ Добавить порог</button>}>
+        })}><Icon name="plus" size={14} />Добавить порог</button>}>
         {d.warn_actions.length === 0 ? <Empty icon="⚖️">Автоматических действий нет</Empty> : (
           <div className="table-wrap">
             <table>

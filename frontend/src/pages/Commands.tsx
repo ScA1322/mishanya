@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { ApiError, del, errorText, post, put } from "../api";
 import { useMeta } from "../App";
 import { useApi, useModuleConfig, usePreview } from "../hooks";
+import { Icon } from "../icons";
 import type { EmbedConfig } from "../types";
 import {
   Card, DiscordPreview, EmbedEditor, Empty, ErrorBox, Field, Loading, Modal, MultiChannelSelect, MultiRoleSelect, NumberInput,
@@ -125,7 +126,7 @@ export default function Commands() {
   return (
     <>
       <PageHeader title="Пользовательские команды" subtitle="Ответы-шаблоны без выполнения кода. Вызов через префикс или /cmd."
-        actions={<button className="btn btn-primary" onClick={() => setEditing("new")}>+ Новая команда</button>} />
+        actions={<button className="btn btn-primary" onClick={() => setEditing("new")}><Icon name="plus" size={15} />Новая команда</button>} />
       <div className="stack">
         {cfg.draft && (
           <Card>

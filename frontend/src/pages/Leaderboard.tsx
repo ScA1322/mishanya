@@ -109,7 +109,7 @@ export default function Leaderboard() {
               <tbody>
                 {data.items.map((r) => (
                   <tr key={r.user_id}>
-                    <td><strong>{r.rank ?? "—"}</strong></td>
+                    <td><span className={`rank ${r.rank && r.rank <= 3 ? `rank-${r.rank}` : ""}`}>{r.rank ?? "—"}</span></td>
                     <td>
                       <div className="row" style={{ flexWrap: "nowrap" }}>
                         {r.avatar_url ? <img className="avatar" src={r.avatar_url} alt="" /> : <div className="avatar" />}

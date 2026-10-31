@@ -1,5 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Channel, DiscordResources, EmbedConfig, Role } from "./types";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Icon, type IconName } from "./icons";
+import { Markdown } from "./markdown";
+import type { DiscordResources, EmbedConfig, Role } from "./types";
 
 /* ------------------------------------------------------------------ уведомления */
 
@@ -19,7 +21,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="toasts" role="status" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.kind}`}>{t.text}</div>
+          <div key={t.id} className={`toast toast-${t.kind}`}>
+            <Icon name={t.kind === "ok" ? "checkCircle" : t.kind === "err" ? "alert" : "info"} size={18} className="toast-icon" />
+            <span className="toast-text">{t.text}</span>
+            <button className="toast-close" aria-label="Закрыть" onClick={() => setToasts((all) => all.filter((x) => x.id !== t.id))}>
+              <Icon name="x" size={14} />
+            </button>
+          </div>
         ))}
       </div>
     </ToastCtx.Provider>
@@ -133,6 +141,7 @@ export function Empty({ icon = "📭", children }: { icon?: string; children: Re
 export function ErrorBox({ error, onRetry }: { error: string; onRetry?: () => void }) {
   return (
     <div className="alert alert-err row">
+      <Icon name="alert" size={16} />
       <span>{error}</span>
       <span className="spacer" />
       {onRetry && <button className="btn btn-sm" onClick={onRetry}>Повторить</button>}
@@ -217,25 +226,172 @@ export const ResourcesCtx = createContext<DiscordResources>({
 });
 export const useResources = () => useContext(ResourcesCtx);
 
-function channelLabel(c: Channel) {
-  return `#${c.name}${c.category ? ` · ${c.category}` : ""}${c.can_send ? "" : " (нет прав)"}`;
+/* ------------------------------------------------------------------ выбор из списка с поиском */
+
+export type PickerItem = {
+  id: string; label: string; group?: string | null; color?: string | null; disabled?: boolean; hint?: string; icon?: IconName;
+};
+
+function ItemLabel({ item }: { item: PickerItem }) {
+  return (
+    <span className="picker-label">
+      {item.color !== undefined && <span className="role-dot" style={{ background: item.color ?? "var(--muted)" }} />}
+      {item.icon && <Icon name={item.icon} size={14} className="muted" />}
+      <span className="picker-text">{item.label}</span>
+      {item.hint && <span className="picker-hint">{item.hint}</span>}
+    </span>
+  );
 }
 
-export function ChannelSelect({ value, onChange, placeholder = "— не выбран —", textOnly = true }: {
+/**
+ * Выпадающий список с поиском и клавиатурой (↑ ↓ Enter Esc). Позиционируется fixed,
+ * поэтому не обрезается контейнерами с прокруткой (например, таблицами).
+ */
+export function Picker({ items, value, onChange, placeholder = "— не выбрано —", clearLabel, trigger, searchPlaceholder = "Поиск…", emptyText = "Ничего не найдено", missingLabel = "Объект" }: {
+  items: PickerItem[]; value: string | null; onChange: (v: string | null) => void; placeholder?: string;
+  clearLabel?: string; trigger?: ReactNode; searchPlaceholder?: string; emptyText?: string; missingLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number; maxHeight: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q ? items.filter((i) => i.label.toLowerCase().includes(q) || i.id === q || (i.group ?? "").toLowerCase().includes(q)) : items;
+    return clearLabel && !q ? [{ id: "", label: clearLabel } as PickerItem, ...list] : list;
+  }, [items, query, clearLabel]);
+
+  const place = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const width = Math.min(Math.max(r.width, 280), window.innerWidth - 16);
+    const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8);
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    if (below >= 260 || below >= above) setPos({ left, top: r.bottom + 4, width, maxHeight: Math.min(360, below) });
+    else setPos({ left, bottom: window.innerHeight - r.top + 4, width, maxHeight: Math.min(360, above) });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    place();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!popRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false);
+    };
+    const onScroll = (e: Event) => {
+      if (!popRef.current?.contains(e.target as Node)) place();
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", place);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, place]);
+
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  const openMenu = () => {
+    setQuery("");
+    const idx = filtered.findIndex((i) => i.id === (value ?? ""));
+    setActive(Math.max(0, idx));
+    setOpen(true);
+  };
+  const choose = (item: PickerItem | undefined) => {
+    if (!item || item.disabled) return;
+    onChange(item.id || null);
+    setOpen(false);
+    btnRef.current?.focus();
+  };
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(filtered.length - 1, a + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+    else if (e.key === "Enter") { e.preventDefault(); choose(filtered[active]); }
+    else if (e.key === "Escape") { e.preventDefault(); setOpen(false); btnRef.current?.focus(); }
+    else if (e.key === "Tab") setOpen(false);
+  };
+
+  const selected = items.find((i) => i.id === value);
+  let lastGroup: string | null | undefined;
+  return (
+    <>
+      <button ref={btnRef} type="button" className={trigger ? "picker-add" : "select picker-trigger"} aria-haspopup="listbox" aria-expanded={open}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) { e.preventDefault(); openMenu(); } }}>
+        {trigger ?? (
+          <>
+            {selected ? <ItemLabel item={selected} />
+              : value ? <span className="picker-text warn-text"><Icon name="alert" size={14} /> {missingLabel} {value} не найден</span>
+                : <span className="picker-text muted">{placeholder}</span>}
+            <Icon name="chevronsUpDown" size={14} className="muted picker-chevron" />
+          </>
+        )}
+      </button>
+      {open && pos && (
+        <div ref={popRef} className="picker-pop" style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }} onKeyDown={onKey}>
+          <div className="picker-search">
+            <Icon name="search" size={14} className="muted" />
+            <input autoFocus value={query} placeholder={searchPlaceholder} aria-label={searchPlaceholder}
+              onChange={(e) => { setQuery(e.target.value); setActive(0); }} />
+          </div>
+          <div ref={listRef} className="picker-list" role="listbox" style={{ maxHeight: Math.max(120, pos.maxHeight - 48) }}>
+            {filtered.length === 0 && <div className="picker-empty">{emptyText}</div>}
+            {filtered.map((item, i) => {
+              const grouped = item.id !== "" && item.group !== undefined;
+              const header = grouped && item.group !== lastGroup;
+              if (grouped) lastGroup = item.group;
+              return (
+                <div key={item.id || "__clear"}>
+                  {header && <div className="picker-group">{item.group ?? "Без категории"}</div>}
+                  <div role="option" aria-selected={item.id === (value ?? "")} aria-disabled={item.disabled} data-index={i}
+                    className={`picker-option ${i === active ? "active" : ""} ${item.disabled ? "disabled" : ""}`}
+                    onMouseEnter={() => setActive(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => choose(item)}>
+                    {item.id === "" ? <span className="muted">{item.label}</span> : <ItemLabel item={item} />}
+                    {item.id !== "" && item.id === value && <Icon name="check" size={14} className="picker-check" />}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ каналы и роли */
+
+function useChannelItems(textOnly = true): PickerItem[] {
+  const { channels } = useResources();
+  return useMemo(() => channels.filter((c) => !textOnly || c.text).map((c) => ({
+    id: c.id, label: c.name, group: c.category ?? null, icon: "hash" as IconName, hint: c.can_send ? undefined : "нет прав",
+  })), [channels, textOnly]);
+}
+
+function useRoleItems(assignableOnly: boolean): PickerItem[] {
+  const { roles } = useResources();
+  return useMemo(() => roles.filter((r) => !r.managed).map((r) => ({
+    id: r.id, label: r.name, color: r.color, disabled: assignableOnly && !r.assignable,
+    hint: assignableOnly && !r.assignable ? "выше роли бота" : undefined,
+  })), [roles, assignableOnly]);
+}
+
+export function ChannelSelect({ value, onChange, placeholder = "— канал не выбран —", textOnly = true }: {
   value: string | null; onChange: (v: string | null) => void; placeholder?: string; textOnly?: boolean;
 }) {
-  const { channels, connected } = useResources();
-  const list = channels.filter((c) => !textOnly || c.text);
-  const known = !value || list.some((c) => c.id === value);
-  return (
-    <select className="select" value={value ?? ""} onChange={(e) => onChange(e.target.value || null)}>
-      <option value="">{placeholder}</option>
-      {!known && <option value={value!}>{connected ? `⚠ удалённый канал ${value}` : `Канал ${value}`}</option>}
-      {list.map((c) => (
-        <option key={c.id} value={c.id}>{channelLabel(c)}</option>
-      ))}
-    </select>
-  );
+  const items = useChannelItems(textOnly);
+  const { connected } = useResources();
+  return <Picker items={items} value={value} onChange={onChange} placeholder={placeholder} clearLabel={placeholder} missingLabel="Канал"
+    searchPlaceholder="Поиск канала…" emptyText={connected ? "Канал не найден" : "Бот не подключён — каналы недоступны"} />;
 }
 
 function RoleChip({ id, onRemove }: { id: string; onRemove: () => void }) {
@@ -247,7 +403,7 @@ function RoleChip({ id, onRemove }: { id: string; onRemove: () => void }) {
       <span className="role-dot" style={{ background: role?.color ?? "var(--muted)" }} />
       {role ? role.name : `Роль ${id}`}
       {problem && <span className="small">({problem})</span>}
-      <button type="button" onClick={onRemove} aria-label="Убрать">×</button>
+      <button type="button" onClick={onRemove} aria-label="Убрать"><Icon name="x" size={12} /></button>
     </span>
   );
 }
@@ -255,30 +411,24 @@ function RoleChip({ id, onRemove }: { id: string; onRemove: () => void }) {
 export function RoleSelect({ value, onChange, assignableOnly = false, placeholder = "— выберите роль —" }: {
   value: string | null; onChange: (v: string | null) => void; assignableOnly?: boolean; placeholder?: string;
 }) {
-  const { roles } = useResources();
-  return (
-    <select className="select" value={value ?? ""} onChange={(e) => onChange(e.target.value || null)}>
-      <option value="">{placeholder}</option>
-      {roles.filter((r) => !r.managed).map((r) => (
-        <option key={r.id} value={r.id} disabled={assignableOnly && !r.assignable}>
-          {r.name}{assignableOnly && !r.assignable ? " (выше роли бота)" : ""}
-        </option>
-      ))}
-    </select>
-  );
+  const items = useRoleItems(assignableOnly);
+  const { connected } = useResources();
+  return <Picker items={items} value={value} onChange={onChange} placeholder={placeholder} searchPlaceholder="Поиск роли…" missingLabel="Роль"
+    emptyText={connected ? "Роль не найдена" : "Бот не подключён — роли недоступны"} />;
+}
+
+function AddTrigger({ label }: { label: string }) {
+  return <><Icon name="plus" size={14} />{label}</>;
 }
 
 export function MultiRoleSelect({ value, onChange, assignableOnly = false }: {
   value: string[]; onChange: (v: string[]) => void; assignableOnly?: boolean;
 }) {
+  const items = useRoleItems(assignableOnly).filter((i) => !value.includes(i.id));
   return (
-    <div className="stack" style={{ gap: 8 }}>
-      {value.length > 0 && (
-        <div className="chips">
-          {value.map((id) => <RoleChip key={id} id={id} onRemove={() => onChange(value.filter((x) => x !== id))} />)}
-        </div>
-      )}
-      <RoleSelect value={null} assignableOnly={assignableOnly} placeholder="+ добавить роль"
+    <div className="chips">
+      {value.map((id) => <RoleChip key={id} id={id} onRemove={() => onChange(value.filter((x) => x !== id))} />)}
+      <Picker items={items} value={null} trigger={<AddTrigger label="Роль" />} searchPlaceholder="Поиск роли…"
         onChange={(v) => v && !value.includes(v) && onChange([...value, v])} />
     </div>
   );
@@ -287,27 +437,24 @@ export function MultiRoleSelect({ value, onChange, assignableOnly = false }: {
 export function MultiChannelSelect({ value, onChange, categories = false }: {
   value: string[]; onChange: (v: string[]) => void; categories?: boolean;
 }) {
-  const { channels, categories: cats } = useResources();
-  const items = categories ? cats.map((c) => ({ id: c.id, label: c.name })) : channels.map((c) => ({ id: c.id, label: `#${c.name}` }));
+  const { categories: cats } = useResources();
+  const channelItems = useChannelItems(false);
+  const all: PickerItem[] = categories ? cats.map((c) => ({ id: c.id, label: c.name, icon: "folder" as IconName })) : channelItems;
   return (
-    <div className="stack" style={{ gap: 8 }}>
-      {value.length > 0 && (
-        <div className="chips">
-          {value.map((id) => {
-            const item = items.find((i) => i.id === id);
-            return (
-              <span key={id} className={`chip ${item ? "" : "problem"}`}>
-                {item ? item.label : `${categories ? "Категория" : "Канал"} ${id}`}
-                <button type="button" onClick={() => onChange(value.filter((x) => x !== id))} aria-label="Убрать">×</button>
-              </span>
-            );
-          })}
-        </div>
-      )}
-      <select className="select" value="" onChange={(e) => e.target.value && !value.includes(e.target.value) && onChange([...value, e.target.value])}>
-        <option value="">{categories ? "+ добавить категорию" : "+ добавить канал"}</option>
-        {items.filter((i) => !value.includes(i.id)).map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-      </select>
+    <div className="chips">
+      {value.map((id) => {
+        const item = all.find((i) => i.id === id);
+        return (
+          <span key={id} className={`chip ${item ? "" : "problem"}`}>
+            <Icon name={categories ? "folder" : "hash"} size={12} className="muted" />
+            {item ? item.label : `${categories ? "Категория" : "Канал"} ${id}`}
+            <button type="button" onClick={() => onChange(value.filter((x) => x !== id))} aria-label="Убрать"><Icon name="x" size={12} /></button>
+          </span>
+        );
+      })}
+      <Picker items={all.filter((i) => !value.includes(i.id))} value={null} trigger={<AddTrigger label={categories ? "Категория" : "Канал"} />}
+        searchPlaceholder={categories ? "Поиск категории…" : "Поиск канала…"}
+        onChange={(v) => v && !value.includes(v) && onChange([...value, v])} />
     </div>
   );
 }
@@ -435,12 +582,12 @@ export function DiscordPreview({ data, loading }: { data: PreviewData | null; lo
         <div className="bot-avatar">M</div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div><span className="name">Mishanya</span><span className="bot-tag">БОТ</span></div>
-          {data.text && <div className="text">{data.text}</div>}
+          {data.text && <div className="text"><Markdown text={data.text} /></div>}
           {data.embed && (
             <div className="embed" style={{ borderLeftColor: data.embed.color }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                {data.embed.title && <div className="embed-title">{data.embed.title}</div>}
-                {data.embed.description && <div className="embed-desc">{data.embed.description}</div>}
+                {data.embed.title && <div className="embed-title"><Markdown text={data.embed.title} /></div>}
+                {data.embed.description && <div className="embed-desc"><Markdown text={data.embed.description} /></div>}
                 {data.embed.image_url && <img className="embed-image" src={data.embed.image_url} alt="" />}
                 {data.embed.footer && <div className="embed-footer">{data.embed.footer}</div>}
               </div>
@@ -456,13 +603,68 @@ export function DiscordPreview({ data, loading }: { data: PreviewData | null; lo
 /* ------------------------------------------------------------------ прочее */
 
 export function SaveBar({ dirty, saving, onSave, onReset }: { dirty: boolean; saving: boolean; onSave: () => void; onReset: () => void }) {
+  useEffect(() => {
+    if (!dirty) return;
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (!saving) onSave();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [dirty, saving, onSave]);
   if (!dirty) return null;
   return (
-    <div className="savebar">
+    <div className="savebar" role="region" aria-label="Несохранённые изменения">
+      <Icon name="info" size={16} />
       <span>Есть несохранённые изменения</span>
       <span className="spacer" />
+      <kbd className="savebar-kbd">Ctrl+S</kbd>
       <button className="btn btn-sm" onClick={onReset} disabled={saving}>Отменить</button>
       <button className="btn btn-primary btn-sm" onClick={onSave} disabled={saving}>{saving ? "Сохранение…" : "Сохранить"}</button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ тема */
+
+export type Theme = "system" | "light" | "dark";
+const THEME_KEY = "mishanya-theme";
+
+export function readTheme(): Theme {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    return t === "light" || t === "dark" ? t : "system";
+  } catch {
+    return "system";
+  }
+}
+
+export function applyTheme(t: Theme) {
+  if (t === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+}
+
+export function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  const set = (t: Theme) => {
+    setTheme(t);
+    applyTheme(t);
+    try {
+      localStorage.setItem(THEME_KEY, t);
+    } catch {
+      /* хранилище недоступно — тема действует до перезагрузки */
+    }
+  };
+  const opts: [Theme, IconName, string][] = [["system", "monitor", "Как в системе"], ["light", "sun", "Светлая"], ["dark", "moon", "Тёмная"]];
+  return (
+    <div className="segmented" role="radiogroup" aria-label="Тема оформления">
+      {opts.map(([t, icon, label]) => (
+        <button key={t} type="button" role="radio" aria-checked={theme === t} title={label} className={theme === t ? "active" : ""} onClick={() => set(t)}>
+          <Icon name={icon} size={15} />
+        </button>
+      ))}
     </div>
   );
 }
