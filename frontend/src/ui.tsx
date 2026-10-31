@@ -573,17 +573,18 @@ export function EmbedEditor({ value, onChange, vars }: {
 
 export type PreviewData = { text: string; embed: null | { title: string; description: string; footer: string; color: string; image_url: string; show_avatar: boolean } };
 
-export function DiscordPreview({ data, loading }: { data: PreviewData | null; loading?: boolean }) {
+/** Предпросмотр сообщения бота; children — вложения и компоненты (кнопки, списки) под сообщением. */
+export function DiscordPreview({ data, loading, children }: { data: PreviewData | null; loading?: boolean; children?: ReactNode }) {
   if (loading && !data) return <Loading text="Формирую предпросмотр…" />;
-  if (!data || (!data.text && !data.embed)) return <div className="muted small">Сообщение пустое — ничего не будет отправлено.</div>;
+  if (!children && (!data || (!data.text && !data.embed))) return <div className="muted small">Сообщение пустое — ничего не будет отправлено.</div>;
   return (
     <div className="preview">
       <div className="author">
         <div className="bot-avatar">M</div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div><span className="name">Mishanya</span><span className="bot-tag">БОТ</span></div>
-          {data.text && <div className="text"><Markdown text={data.text} /></div>}
-          {data.embed && (
+          {data?.text && <div className="text"><Markdown text={data.text} /></div>}
+          {data?.embed && (
             <div className="embed" style={{ borderLeftColor: data.embed.color }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 {data.embed.title && <div className="embed-title"><Markdown text={data.embed.title} /></div>}
@@ -594,6 +595,7 @@ export function DiscordPreview({ data, loading }: { data: PreviewData | null; lo
               {data.embed.show_avatar && <div className="embed-thumb" />}
             </div>
           )}
+          {children}
         </div>
       </div>
     </div>

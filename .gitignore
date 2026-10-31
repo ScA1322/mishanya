@@ -13,3 +13,6 @@ __pycache__/
 # Frontend (собранная папка dist хранится в проекте, чтобы Node.js не был обязателен)
 frontend/node_modules/
 frontend/*.tsbuildinfo
+
+# Флаг автообновления: start.bat переустановит зависимости
+.update-deps

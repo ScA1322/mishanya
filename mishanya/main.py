@@ -16,6 +16,7 @@ from .bot.client import MishanyaBot
 from .config import ConfigError, Settings, load_settings
 from .core import App, setup_logging
 from .db import Database, DatabaseError
+from .services.updater import RESTART_EXIT_CODE, UpdateError
 
 log = logging.getLogger("mishanya")
 
@@ -83,10 +84,42 @@ async def open_browser_when_ready(settings: Settings, server: uvicorn.Server) ->
     for _ in range(100):
         if server.started:
             log.info("Панель Mishanya: %s", settings.panel_url)
-            if settings.open_browser:
+            # После перезапуска для обновления вкладка панели уже открыта.
+            if settings.open_browser and os.environ.get("MISHANYA_RESTARTED") != "1":
                 await asyncio.to_thread(webbrowser.open, settings.panel_url)
             return
         await asyncio.sleep(0.1)
+
+
+UPDATE_FIRST_CHECK_DELAY = 90  # секунд после запуска
+UPDATE_LOOP_INTERVAL = 600
+
+
+async def auto_update_loop(app: App, server: uvicorn.Server) -> None:
+    """Периодически проверяет GitHub; при запуске через start.bat сам ставит обновление и перезапускается."""
+    await asyncio.sleep(UPDATE_FIRST_CHECK_DELAY)
+    while not server.should_exit:
+        try:
+            cfg = await app.config.get_global()
+            updater = app.updater
+            if (cfg.auto_update_enabled and not updater.state.restart_required
+                    and updater.due(cfg.update_check_interval_hours)):
+                state = await updater.check()
+                if state.supported and state.behind:
+                    if updater.launched_by_script():
+                        log.info("Найдено обновление (%d новых коммитов) — устанавливаю", state.behind)
+                        await updater.apply()
+                        if app.request_restart is not None:
+                            app.request_restart()
+                            return
+                    else:
+                        log.info("Доступно обновление Mishanya (%d новых коммитов). Автоустановка работает при "
+                                 "запуске через start.bat.", state.behind)
+        except UpdateError as exc:
+            log.warning("Автообновление не выполнено: %s", exc)
+        except Exception:  # noqa: BLE001
+            log.exception("Ошибка автообновления")
+        await asyncio.sleep(UPDATE_LOOP_INTERVAL)
 
 
 async def run(settings: Settings, app: App) -> int:
@@ -100,9 +133,19 @@ async def run(settings: Settings, app: App) -> int:
                                            log_config=None, access_log=False, lifespan="off"))
     pid_file = settings.data_dir / "mishanya.pid"
     pid_file.write_text(str(os.getpid()), encoding="ascii")
+    exit_code = 0
+
+    def request_restart() -> None:
+        nonlocal exit_code
+        log.info("Перезапуск Mishanya для применения обновления…")
+        exit_code = RESTART_EXIT_CODE
+        server.should_exit = True
+
+    app.request_restart = request_restart
     bot_task = asyncio.create_task(run_bot(app), name="bot")
     helpers = [asyncio.create_task(watch_stop_flag(settings, server)),
-               asyncio.create_task(open_browser_when_ready(settings, server))]
+               asyncio.create_task(open_browser_when_ready(settings, server)),
+               asyncio.create_task(auto_update_loop(app, server))]
     try:
         await server.serve()
     finally:
@@ -115,7 +158,7 @@ async def run(settings: Settings, app: App) -> int:
         await app.db.dispose()
         pid_file.unlink(missing_ok=True)
         log.info("Mishanya остановлена")
-    return 0
+    return exit_code
 
 
 def main() -> int:

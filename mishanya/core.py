@@ -6,6 +6,7 @@ import logging.handlers
 import re
 from collections import deque
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -17,8 +18,11 @@ from .services.custom_commands import CustomCommandService
 from .services.eventlog import EventLogService
 from .services.guilds import GuildService
 from .services.leveling import LevelingService
+from .services.menus import MenuService
 from .services.moderation import ModerationService
 from .services.reminders import ReminderService
+from .services.tickets import TicketService
+from .services.updater import UpdateService
 
 if TYPE_CHECKING:
     from .bot.client import MishanyaBot
@@ -98,6 +102,8 @@ class App:
     bot: "MishanyaBot | None" = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     bot_error: str | None = None
+    # Устанавливается main.run: корректно завершает приложение с кодом перезапуска для start.bat.
+    request_restart: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
         self.config = ConfigService(self.db)
@@ -108,3 +114,6 @@ class App:
         self.eventlog = EventLogService(self.db)
         self.reminders = ReminderService(self.db)
         self.commands = CustomCommandService(self.db)
+        self.tickets = TicketService(self.db)
+        self.menus = MenuService(self.db, self.settings.data_dir / "menus")
+        self.updater = UpdateService(self.settings.base_dir, self.settings.db_path, self.settings.backup_dir)

@@ -16,6 +16,7 @@ from ...db.backup import BackupError, create_backup, list_backups, resolve_backu
 from ...db.database import check_integrity
 from ...schemas import LOG_EVENTS, MODULES, EmbedConfig, GlobalSettings
 from ...services.automod import RULE_NAMES
+from ...services.updater import UpdateError
 from ...services.templates import SAMPLE_VALUES, TEMPLATE_VARIABLES, member_values, render
 from ..auth import require_auth
 from ..deps import discord_guild, get_app, iso
@@ -258,3 +259,53 @@ async def preview(body: PreviewIn, request: Request) -> dict:
                         "footer": render(e.footer, values)[:2048], "color": e.color, "image_url": e.image_url,
                         "show_avatar": e.show_avatar}
     return out
+
+
+# ---------------------------------------------------------------- обновления
+
+_restart_tasks: set[asyncio.Task] = set()
+
+
+def _update_out(app) -> dict:  # noqa: ANN001
+    st = app.updater.state
+    return {
+        "supported": st.supported, "reason": st.reason, "branch": st.branch, "upstream": st.upstream,
+        "current": st.current, "remote": st.remote, "behind": st.behind, "ahead": st.ahead, "commits": st.commits,
+        "last_check": iso(st.last_check), "last_error": st.last_error, "last_update": iso(st.last_update),
+        "busy": st.busy, "restart_required": st.restart_required,
+        "launcher": app.updater.launched_by_script(),
+    }
+
+
+@router.get("/update")
+async def update_status(request: Request) -> dict:
+    app = get_app(request)
+    if app.updater.state.last_check is None and not app.updater.state.busy:
+        await app.updater.check()
+    return _update_out(app)
+
+
+@router.post("/update/check")
+async def update_check(request: Request) -> dict:
+    app = get_app(request)
+    await app.updater.check()
+    return _update_out(app)
+
+
+@router.post("/update/apply")
+async def update_apply(request: Request) -> dict:
+    app = get_app(request)
+    try:
+        version = await app.updater.apply()
+    except UpdateError as exc:
+        raise HTTPException(409, str(exc)) from None
+    restarting = app.updater.launched_by_script() and app.request_restart is not None
+    if restarting:
+        async def later() -> None:
+            await asyncio.sleep(1.5)  # даём панели получить ответ
+            app.request_restart()
+
+        task = asyncio.create_task(later())
+        _restart_tasks.add(task)
+        task.add_done_callback(_restart_tasks.discard)
+    return {"ok": True, "version": version, "restarting": restarting, "status": _update_out(app)}

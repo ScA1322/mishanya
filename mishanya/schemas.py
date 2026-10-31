@@ -285,6 +285,40 @@ class LoggingConfig(Strict):
         return self
 
 
+# ---------------------------------------------------------------- Тикеты
+
+class TicketsConfig(Strict):
+    enabled: bool = False
+    category_id: OptSnowflake = None  # категория для каналов тикетов; пусто — без категории
+    support_roles: list[Snowflake] = Field(default_factory=list, max_length=20)
+    log_channel_id: OptSnowflake = None  # сюда отправляются уведомления и стенограммы закрытых тикетов
+    max_open_per_user: int = Field(1, ge=1, le=10)
+    ask_topic: bool = True  # спрашивать тему в окне перед созданием тикета
+    channel_name: str = Field("тикет-{number}", min_length=1, max_length=90)
+    opening_message: str = Field(
+        "{user}, спасибо за обращение! Опишите вопрос подробнее — команда поддержки скоро ответит.",
+        max_length=2000)
+    ping_support: bool = True
+    transcript: bool = True
+    delete_delay_seconds: int = Field(10, ge=0, le=3600)
+
+    @field_validator("support_roles")
+    @classmethod
+    def _dedupe_roles(cls, v: list[str]) -> list[str]:
+        return _dedupe(v)
+
+
+# ---------------------------------------------------------------- Музыка
+
+class MusicConfig(Strict):
+    enabled: bool = True
+    dj_roles: list[Snowflake] = Field(default_factory=list, max_length=20)  # пусто — управлять могут все в канале
+    default_volume: int = Field(50, ge=1, le=200)
+    max_queue: int = Field(100, ge=1, le=500)
+    max_track_minutes: int = Field(0, ge=0, le=600)  # 0 — без ограничения
+    idle_minutes: int = Field(5, ge=1, le=120)  # выйти из канала, если ничего не играет
+
+
 # ---------------------------------------------------------------- Прочее
 
 class UtilityConfig(Strict):
@@ -301,6 +335,8 @@ MODULES: dict[str, type[Strict]] = {
     "custom_commands": CustomCommandsConfig,
     "logging": LoggingConfig,
     "utility": UtilityConfig,
+    "tickets": TicketsConfig,
+    "music": MusicConfig,
 }
 
 
@@ -322,3 +358,90 @@ class GlobalSettings(Strict):
     auto_backup_interval_hours: int = Field(24, ge=1, le=720)
     auto_backup_keep: int = Field(10, ge=1, le=200)
     bot_status_text: str = Field("/help | Mishanya", max_length=128)
+    auto_update_enabled: bool = True
+    update_check_interval_hours: int = Field(6, ge=1, le=168)
+
+
+# ---------------------------------------------------------------- Меню с кнопками
+
+class MenuButtonConfig(Strict):
+    label: str = Field("", max_length=80)
+    emoji: str = Field("", max_length=64)
+    style: Literal["primary", "secondary", "success", "danger", "link"] = "primary"
+    action: Literal["link", "role", "reply", "ticket"] = "reply"
+    url: str = Field("", max_length=512)
+    role_id: OptSnowflake = None
+    reply: str = Field("", max_length=2000)
+    row: int | None = Field(None, ge=0, le=4)
+
+    @model_validator(mode="after")
+    def _check(self) -> "MenuButtonConfig":
+        if not self.label and not self.emoji:
+            raise ValueError("У кнопки должна быть подпись или эмодзи")
+        if self.action == "link":
+            if not self.url.startswith(("https://", "http://", "discord://")):
+                raise ValueError(f"Кнопка «{self.label or self.emoji}»: ссылка должна начинаться с https://")
+            self.style = "link"
+        elif self.style == "link":
+            raise ValueError(f"Кнопка «{self.label or self.emoji}»: стиль «ссылка» доступен только для кнопок-ссылок")
+        if self.action == "role" and not self.role_id:
+            raise ValueError(f"Кнопка «{self.label or self.emoji}»: выберите роль")
+        if self.action == "reply" and not self.reply.strip():
+            raise ValueError(f"Кнопка «{self.label or self.emoji}»: заполните текст ответа")
+        return self
+
+
+class RoleOption(Strict):
+    role_id: Snowflake
+    label: str = Field(min_length=1, max_length=100)
+    description: str = Field("", max_length=100)
+    emoji: str = Field("", max_length=64)
+
+
+class RoleSelectConfig(Strict):
+    """Выпадающий список ролей под сообщением: участник сам выбирает себе роли."""
+
+    enabled: bool = False
+    placeholder: str = Field("Выберите роль", max_length=150)
+    options: list[RoleOption] = Field(default_factory=list, max_length=25)
+    min_values: int = Field(0, ge=0, le=25)  # 0 — можно снять все роли из списка
+    max_values: int = Field(1, ge=1, le=25)  # 1 — только одна роль из списка
+
+    @model_validator(mode="after")
+    def _check(self) -> "RoleSelectConfig":
+        if not self.enabled:
+            return self
+        if not self.options:
+            raise ValueError("Добавьте в выпадающий список хотя бы одну роль")
+        ids = [o.role_id for o in self.options]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Роли в выпадающем списке не должны повторяться")
+        self.max_values = min(self.max_values, len(self.options))
+        if self.min_values > self.max_values:
+            raise ValueError("Минимум выбранных ролей не может быть больше максимума")
+        return self
+
+
+class MenuConfig(Strict):
+    name: str = Field(min_length=1, max_length=100)
+    channel_id: OptSnowflake = None
+    content: str = Field("", max_length=2000)
+    embed: EmbedConfig = Field(default_factory=EmbedConfig)
+    buttons: list[MenuButtonConfig] = Field(default_factory=list, max_length=25)
+    role_select: RoleSelectConfig = Field(default_factory=RoleSelectConfig)
+
+    @model_validator(mode="after")
+    def _rows(self) -> "MenuConfig":
+        if self.role_select.enabled:
+            # Список занимает первый ряд целиком, кнопкам остаются ряды 2–5.
+            if len(self.buttons) > 20:
+                raise ValueError("Вместе с выпадающим списком можно добавить не больше 20 кнопок")
+            if any(b.row == 0 for b in self.buttons):
+                raise ValueError("Первый ряд занят выпадающим списком ролей — выберите для кнопок ряды 2–5")
+        counts: dict[int, int] = {}
+        for b in self.buttons:
+            if b.row is not None:
+                counts[b.row] = counts.get(b.row, 0) + 1
+        if any(n > 5 for n in counts.values()):
+            raise ValueError("В одном ряду может быть не больше 5 кнопок")
+        return self

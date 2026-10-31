@@ -415,3 +415,21 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparen
 .md-spoiler { background: #1e1f22; color: transparent; border-radius: 3px; transition: color 0.1s; cursor: pointer; }
 .md-spoiler:hover { color: inherit; background: #3a3c42; }
 .preview .embed .md-code, .preview .embed .md-pre { background: #1e1f22; }
+
+/* ---------- Меню с кнопками: предпросмотр компонентов Discord ---------- */
+.dc-image { display: block; max-width: 100%; max-height: 260px; border-radius: 6px; margin-top: 6px; }
+.dc-components { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.dc-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.dc-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 14px; border-radius: 6px;
+  font-size: 14px; font-weight: 500; color: #fff; background: #4e5058; max-width: 100%; }
+.dc-btn.primary { background: #5865f2; }
+.dc-btn.success { background: #248046; }
+.dc-btn.danger { background: #da373c; }
+.dc-btn.secondary, .dc-btn.link { background: #4e5058; }
+.dc-select { display: flex; align-items: center; justify-content: space-between; gap: 8px; max-width: 400px; min-height: 40px;
+  padding: 6px 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); font-size: 14px; }
+.menu-item { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--surface); }
+.menu-item + .menu-item { margin-top: 8px; }
+.menu-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.image-drop { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.image-drop img { max-width: 160px; max-height: 100px; border-radius: 6px; border: 1px solid var(--border); }

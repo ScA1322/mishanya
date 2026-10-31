@@ -15,7 +15,8 @@ BUILTIN_NAMES = {
     "help", "ping", "avatar", "userinfo", "serverinfo", "poll", "remind", "reminders", "unremind",
     "rank", "leaderboard", "level", "profile", "invite", "kick", "ban", "unban", "timeout",
     "untimeout", "warn", "warnings", "unwarn", "clearwarnings", "clear", "purge", "slowmode", "lock",
-    "unlock", "nickname", "role", "xp", "rewards", "cmd", "case", "cases",
+    "unlock", "nickname", "role", "xp", "rewards", "cmd", "case", "cases", "ticket",
+    "play", "skip", "stop", "pause", "resume", "queue", "nowplaying", "volume", "leave", "shuffle", "loop",
 }
 
 

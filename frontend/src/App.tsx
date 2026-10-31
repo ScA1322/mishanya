@@ -18,6 +18,9 @@ import Welcome from "./pages/Welcome";
 import Autoroles from "./pages/Autoroles";
 import Commands from "./pages/Commands";
 import Logs from "./pages/Logs";
+import Menus from "./pages/Menus";
+import Tickets from "./pages/Tickets";
+import Music from "./pages/Music";
 import Settings from "./pages/Settings";
 import Diagnostics from "./pages/Diagnostics";
 import Help from "./pages/Help";
@@ -46,6 +49,9 @@ const GUILD_NAV: [string, IconName, string][] = [
   ["welcome", "userPlus", "Приветствия"],
   ["autoroles", "tag", "Автороли"],
   ["commands", "terminal", "Команды"],
+  ["menus", "layout", "Меню с кнопками"],
+  ["tickets", "ticket", "Тикеты"],
+  ["music", "music", "Музыка"],
   ["logs", "file", "Журналы"],
 ];
 
@@ -170,6 +176,9 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
             <Route path="autoroles" element={<Autoroles />} />
             <Route path="commands" element={<Commands />} />
             <Route path="logs" element={<Logs />} />
+            <Route path="menus" element={<Menus />} />
+            <Route path="tickets" element={<Tickets />} />
+            <Route path="music" element={<Music />} />
           </Route>
           <Route path="settings" element={<Settings />} />
           <Route path="diagnostics" element={<Diagnostics />} />

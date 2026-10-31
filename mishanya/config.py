@@ -43,6 +43,7 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: BASE_DIR / "data")
     backup_dir: Path = field(default_factory=lambda: BASE_DIR / "backups")
     frontend_dist: Path = field(default_factory=lambda: BASE_DIR / "frontend" / "dist")
+    base_dir: Path = BASE_DIR
     log_level: str = "INFO"
     session_hours: int = 72
 

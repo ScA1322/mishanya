@@ -17,6 +17,9 @@ HELP_SECTIONS = {
                     "/cases, /clear, /purge, /slowmode, /lock, /unlock, /nickname, /role add|remove",
     "🧰 Полезное": "/help, /ping, /avatar, /userinfo, /serverinfo, /poll, /invite",
     "⏰ Напоминания": "/remind, /reminders, /unremind",
+    "🎵 Музыка (SoundCloud)": "/play, /skip, /stop, /pause, /resume, /queue, /nowplaying, /volume, /shuffle, "
+                              "/loop, /leave",
+    "🎫 Тикеты": "/ticket open, /ticket close, /ticket claim, /ticket add, /ticket remove",
     "✨ Команды сервера": "/cmd название — или с префиксом, например `!правила`",
 }
 

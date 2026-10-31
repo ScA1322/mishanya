@@ -200,3 +200,46 @@ class PanelSession(Base):
     csrf_token: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class Ticket(Base):
+    __tablename__ = "tickets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk())
+    number: Mapped[int] = mapped_column(Integer)
+    channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    owner_id: Mapped[int] = mapped_column(BigInteger)
+    owner_name: Mapped[str] = mapped_column(String(100), default="")
+    topic: Mapped[str] = mapped_column(String(1000), default="")
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open|closed
+    claimed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    close_reason: Mapped[str] = mapped_column(String(512), default="")
+
+    __table_args__ = (
+        UniqueConstraint("guild_id", "number", name="uq_ticket_number"),
+        Index("ix_tickets_guild_status", "guild_id", "status"),
+        Index("ix_tickets_channel", "channel_id"),
+    )
+
+
+class ButtonMenu(Base):
+    """Сообщение с кнопками (и изображением), которое бот публикует в текстовом канале."""
+
+    __tablename__ = "button_menus"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    embed: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    buttons: Mapped[list] = mapped_column(JSON, default=list)
+    role_select: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    image_file: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

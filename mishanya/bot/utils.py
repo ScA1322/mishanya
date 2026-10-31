@@ -32,6 +32,8 @@ PERMISSION_NAMES = {
     "add_reactions": "Добавлять реакции",
     "view_channel": "Просматривать каналы",
     "view_audit_log": "Просматривать журнал аудита",
+    "connect": "Подключаться к голосовым каналам",
+    "speak": "Говорить в голосовых каналах",
 }
 
 
@@ -160,3 +162,23 @@ def human_error(exc: BaseException) -> str:
     if isinstance(exc, discord.HTTPException):
         return f"Ошибка Discord API ({exc.status}): {exc.text or 'без описания'}"
     return "Произошла внутренняя ошибка. Подробности записаны в журнал data/mishanya.log."
+
+
+async def guarded(interaction: discord.Interaction, coro) -> None:  # noqa: ANN001
+    """Выполняет обработчик кнопки или формы и показывает ошибку пользователю (у них нет on_error дерева команд)."""
+    try:
+        await coro
+    except UserFacingError as exc:
+        text = str(exc)
+    except discord.HTTPException as exc:
+        log.warning("Ошибка Discord API в обработчике кнопки: %s", exc)
+        text = human_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Ошибка в обработчике кнопки")
+        text = human_error(exc)
+    else:
+        return
+    try:
+        await respond(interaction, embed=err_embed(text), ephemeral=True)
+    except discord.HTTPException:
+        pass

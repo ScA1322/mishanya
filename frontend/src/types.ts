@@ -6,7 +6,9 @@ export type ModuleName =
   | "autoroles"
   | "custom_commands"
   | "logging"
-  | "utility";
+  | "utility"
+  | "tickets"
+  | "music";
 
 export interface GuildSummary {
   id: string;

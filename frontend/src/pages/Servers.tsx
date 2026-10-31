@@ -13,6 +13,8 @@ export const MODULE_LABELS: Record<ModuleName, string> = {
   custom_commands: "Команды",
   logging: "Журналы",
   utility: "Утилиты",
+  tickets: "Тикеты",
+  music: "Музыка",
 };
 
 export default function Servers() {

@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from ..config import LOCAL_HOSTS
 from ..db import DatabaseError
 from . import auth
-from .routes import content, guilds, leveling, system
+from .routes import content, features, guilds, leveling, system
 
 if TYPE_CHECKING:
     from ..core import App
@@ -66,7 +66,7 @@ def create_app(app: "App") -> FastAPI:
     async def db_handler(_request: Request, exc: DatabaseError) -> JSONResponse:
         return JSONResponse({"detail": f"База данных недоступна: {exc}"}, status_code=503)
 
-    for r in (auth.router, system.router, guilds.router, leveling.router, content.router):
+    for r in (auth.router, system.router, guilds.router, leveling.router, content.router, features.router):
         api.include_router(r)
 
     @api.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

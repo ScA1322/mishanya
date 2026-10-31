@@ -1,5 +1,7 @@
 # Основные зависимости Mishanya (Python 3.12+)
-discord.py==2.7.1
+discord.py[voice]==2.7.1
+yt-dlp==2026.10.26
+imageio-ffmpeg==0.7.0
 fastapi==0.162.0
 uvicorn==0.54.0
 SQLAlchemy[asyncio]==2.1.6

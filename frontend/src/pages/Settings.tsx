@@ -1,11 +1,102 @@
 import { useEffect, useState } from "react";
 import { del, errorText, post, put } from "../api";
 import { useApi, useUnsavedWarning } from "../hooks";
+import { Icon } from "../icons";
 import { Card, Empty, ErrorBox, Field, Loading, NumberInput, PageHeader, SaveBar, ToggleRow, fmtBytes, fmtDate, useConfirm, useToast } from "../ui";
 
 interface GlobalSettings {
   log_retention_days: number; max_event_logs_per_guild: number; store_message_content: boolean; auto_backup_enabled: boolean;
   auto_backup_interval_hours: number; auto_backup_keep: number; bot_status_text: string;
+  auto_update_enabled: boolean; update_check_interval_hours: number;
+}
+interface UpdateStatus {
+  supported: boolean; reason: string | null; branch: string | null; upstream: string | null; current: string | null; remote: string | null;
+  behind: number; ahead: number; commits: { sha: string; author: string; date: string; subject: string }[]; last_check: string | null;
+  last_error: string | null; last_update: string | null; busy: boolean; restart_required: boolean; launcher: boolean;
+}
+
+/** Ждёт, пока приложение перезапустится после обновления, и перезагружает страницу. */
+async function waitForRestart() {
+  await new Promise((r) => setTimeout(r, 4000));
+  for (let i = 0; i < 90; i++) {
+    try {
+      const r = await fetch("/api/auth/me", { credentials: "same-origin" });
+      if (r.ok) { window.location.reload(); return; }
+    } catch { /* приложение ещё перезапускается */ }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  window.location.reload();
+}
+
+function Updates({ draft, set }: { draft: GlobalSettings; set: <K extends keyof GlobalSettings>(k: K, v: GlobalSettings[K]) => void }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { data, error, loading, reload, setData } = useApi<UpdateStatus>("/api/update");
+  const [busy, setBusy] = useState<"check" | "apply" | "restart" | null>(null);
+
+  const check = async () => {
+    setBusy("check");
+    try { const s = await post<UpdateStatus>("/api/update/check"); setData(s); if (!s.last_error) toast("ok", s.behind ? `Доступно обновление: ${s.behind} изм.` : "Установлена последняя версия"); }
+    catch (e) { toast("err", errorText(e)); } finally { setBusy(null); }
+  };
+  const apply = async () => {
+    if (!(await confirm({ title: "Установить обновление?", confirmText: "Обновить",
+      text: "Перед обновлением создаётся резервная копия базы. Бот перезапустится и будет недоступен несколько секунд." }))) return;
+    setBusy("apply");
+    try {
+      const r = await post<{ restarting: boolean; version: string; status: UpdateStatus }>("/api/update/apply");
+      setData(r.status);
+      if (r.restarting) { toast("ok", `Обновлено до ${r.version}. Перезапуск…`); setBusy("restart"); await waitForRestart(); return; }
+      toast("ok", `Файлы обновлены до ${r.version}. Перезапустите Mishanya (stop.bat, затем start.bat).`);
+    } catch (e) { toast("err", errorText(e)); reload(); }
+    setBusy(null);
+  };
+
+  return (
+    <Card title="Обновления" subtitle="Новые версии загружаются с GitHub (git pull)"
+      actions={data?.supported && <button className="btn btn-sm" disabled={!!busy} onClick={check}><Icon name="refresh" size={14} />{busy === "check" ? "Проверка…" : "Проверить сейчас"}</button>}>
+      <ToggleRow title="Обновляться автоматически" hint="Mishanya сама проверяет GitHub, ставит обновление и перезапускается. Работает при запуске через start.bat."
+        checked={draft.auto_update_enabled} onChange={(v) => set("auto_update_enabled", v)} />
+      {draft.auto_update_enabled && (
+        <div className="mt" style={{ maxWidth: 260 }}>
+          <Field label="Проверять каждые, часов"><NumberInput value={draft.update_check_interval_hours} min={1} max={168} onChange={(v) => set("update_check_interval_hours", v)} /></Field>
+        </div>
+      )}
+      <div className="mt">
+        {error && <ErrorBox error={error} onRetry={reload} />}
+        {loading && !data ? <Loading text="Проверяю обновления…" /> : data && (
+          <div className="stack">
+            {!data.supported && <div className="alert alert-warn">{data.reason}</div>}
+            {data.supported && (
+              <div className="small">
+                Версия: <code>{data.current}</code> · ветка <code>{data.upstream}</code>
+                {data.last_check && <span className="muted"> · проверено {fmtDate(data.last_check)}</span>}
+              </div>
+            )}
+            {data.last_error && <div className="alert alert-err">{data.last_error}</div>}
+            {!data.launcher && data.supported && (
+              <div className="alert alert-info">Приложение запущено не через start.bat — после обновления перезапустите его вручную.</div>
+            )}
+            {data.restart_required && busy !== "restart" && <div className="alert alert-warn">Обновление установлено — нужен перезапуск Mishanya.</div>}
+            {busy === "restart" && <Loading text="Перезапуск после обновления… Страница обновится сама." />}
+            {data.supported && data.behind === 0 && !data.last_error && !data.restart_required && <div className="alert alert-ok">Установлена последняя версия.</div>}
+            {data.behind > 0 && (
+              <>
+                <div className="alert alert-info row" style={{ flexWrap: "nowrap" }}>
+                  <Icon name="download" size={16} /><span>Доступно обновление: изменений — {data.behind}.</span>
+                  <span className="spacer" />
+                  <button className="btn btn-sm btn-primary" disabled={!!busy} onClick={apply}>{busy === "apply" ? "Обновление…" : "Обновить"}</button>
+                </div>
+                <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>
+                  {data.commits.map((c) => <li key={c.sha}><code>{c.sha}</code> {c.subject} <span className="muted">— {c.author}, {fmtDate(c.date)}</span></li>)}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
 }
 interface Backup { name: string; size_bytes: number; created_at: string }
 
@@ -127,6 +218,7 @@ export default function Settings() {
               </div>
             )}
           </Card>
+          <Updates draft={draft} set={set} />
           <Backups />
         </div>
       )}
