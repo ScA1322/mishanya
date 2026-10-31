@@ -1,17 +1,24 @@
 """Приветствия, прощания и приветственное личное сообщение."""
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 
 import discord
 from discord.ext import commands
 
 from ...schemas import GreetingMessage, WelcomeConfig
+from ...services.cards import background_path, render_card
 from ...services.templates import member_values, render
 from ..client import MishanyaBot
 from ..utils import channel_from_id, message_payload, safe_send
 
 log = logging.getLogger(__name__)
+
+
+def kind_file(kind: str) -> str:
+    return "welcome" if kind == "приветствие" else "goodbye"
 
 
 class Welcome(commands.Cog):
@@ -26,10 +33,26 @@ class Welcome(commands.Cog):
         if channel is None:
             log.warning("Сервер %s: канал для сообщения «%s» не найден или недоступен", member.guild.id, kind)
             return
-        payload = message_payload(msg.message, msg.embed, member_values(member, channel=channel),
-                                  member.display_avatar.url)
+        values = member_values(member, channel=channel)
+        payload = message_payload(msg.message, msg.embed, values, member.display_avatar.url)
+        if msg.card.enabled:
+            try:
+                png = await self.render(member, msg, values)
+                payload["file"] = discord.File(io.BytesIO(png), filename=f"{kind_file(kind)}.png")
+                if "embed" in payload:
+                    payload["embed"].set_image(url=f"attachment://{kind_file(kind)}.png")
+            except Exception:  # noqa: BLE001
+                log.exception("Сервер %s: не удалось нарисовать картинку «%s»", member.guild.id, kind)
         if payload:
             await safe_send(channel, **payload)
+
+    async def render(self, member: discord.abc.User, msg: GreetingMessage, values: dict) -> bytes:
+        try:
+            avatar = await member.display_avatar.replace(size=256, static_format="png").read()
+        except discord.HTTPException:
+            avatar = None
+        bg = background_path(self.app.settings.data_dir / "cards", msg.card.background_image)
+        return await asyncio.to_thread(render_card, msg.card, values, avatar, bg)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:

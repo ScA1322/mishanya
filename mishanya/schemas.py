@@ -192,18 +192,39 @@ class AutomodConfig(Strict):
 
 # ---------------------------------------------------------------- Приветствия
 
+class CardConfig(Strict):
+    """Картинка-баннер с аватаром и именем участника (как в MEE6)."""
+
+    enabled: bool = False
+    layout: Literal["center", "left"] = "center"
+    font: Literal["segoe", "arial", "verdana", "tahoma", "trebuchet", "georgia", "impact", "comic"] = "segoe"
+    title: str = Field("Добро пожаловать!", max_length=100)
+    subtitle: str = Field("{username}", max_length=100)
+    footer: str = Field("Ты наш {member_count}-й участник", max_length=150)
+    text_color: Color = "#FFFFFF"
+    background_color: Color = "#5865F2"
+    background_color2: Color = "#23272A"
+    gradient: bool = True
+    background_image: str | None = Field(None, pattern=r"^[A-Za-z0-9_.-]{1,100}$")  # файл в data/cards
+    overlay_opacity: int = Field(35, ge=0, le=90)  # затемнение картинки фона, %
+    avatar_shape: Literal["circle", "rounded", "square"] = "circle"
+    accent_color: Color = "#FFFFFF"  # цвет обводки аватара
+    ring_width: int = Field(8, ge=0, le=20)
+
+
 class GreetingMessage(Strict):
     enabled: bool = False
     channel_id: OptSnowflake = None
     message: str = Field("", max_length=2000)
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
+    card: CardConfig = Field(default_factory=CardConfig)
 
     @model_validator(mode="after")
     def _check(self) -> "GreetingMessage":
         if self.enabled and not self.channel_id:
             raise ValueError("Выберите канал для сообщения")
-        if self.enabled and not self.message and not self.embed.enabled:
-            raise ValueError("Заполните текст сообщения или включите embed")
+        if self.enabled and not self.message and not self.embed.enabled and not self.card.enabled:
+            raise ValueError("Заполните текст сообщения, включите embed или картинку-баннер")
         return self
 
 
@@ -212,7 +233,8 @@ class WelcomeConfig(Strict):
         default_factory=lambda: GreetingMessage(message="👋 Добро пожаловать на {server}, {user}! Нас уже {member_count}.")
     )
     leave: GreetingMessage = Field(
-        default_factory=lambda: GreetingMessage(message="😢 {username} покинул(а) сервер.")
+        default_factory=lambda: GreetingMessage(message="😢 {username} покинул(а) сервер.", card=CardConfig(
+            title="До встречи!", footer="Теперь нас {member_count}", background_color="#ED4245"))
     )
     dm_enabled: bool = False
     dm_message: str = Field("", max_length=2000)

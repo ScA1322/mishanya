@@ -63,6 +63,24 @@ export interface EmbedConfig {
   show_avatar: boolean;
 }
 
+export interface CardConfig {
+  enabled: boolean;
+  layout: "center" | "left";
+  font: "segoe" | "arial" | "verdana" | "tahoma" | "trebuchet" | "georgia" | "impact" | "comic";
+  title: string;
+  subtitle: string;
+  footer: string;
+  text_color: string;
+  background_color: string;
+  background_color2: string;
+  gradient: boolean;
+  background_image: string | null;
+  overlay_opacity: number;
+  avatar_shape: "circle" | "rounded" | "square";
+  accent_color: string;
+  ring_width: number;
+}
+
 export interface Meta {
   modules: ModuleName[];
   template_variables: Record<string, string>;

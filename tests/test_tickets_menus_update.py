@@ -245,3 +245,64 @@ async def test_music_api_without_bot(authed):
     assert (await authed.post(f"/api/guilds/{GUILD_A}/music/hack")).status_code == 422
     r = await authed.put(f"/api/guilds/{GUILD_A}/config/music", json={"enabled": True, "default_volume": 300})
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------- картинки приветствий
+
+def _png(size=(64, 48), color=(200, 30, 30)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_render_card_variants(tmp_path):
+    import io
+
+    from PIL import Image
+
+    from mishanya.schemas import CardConfig, GreetingMessage
+    from mishanya.services.cards import HEIGHT, WIDTH, render_card, save_background
+
+    values = {"username": "очень_длинное_имя_пользователя_" * 4, "member_count": 7}
+    bg = tmp_path / save_background(tmp_path, GUILD_A, "join", _png())
+    for cfg, background, avatar in [
+        (CardConfig(enabled=True), None, None),
+        (CardConfig(enabled=True, layout="left", avatar_shape="square", gradient=False, ring_width=0), None, _png()),
+        (CardConfig(enabled=True, font="impact", avatar_shape="rounded"), bg, b"broken"),
+    ]:
+        img = Image.open(io.BytesIO(render_card(cfg, values, avatar, background)))
+        assert img.size == (WIDTH, HEIGHT) and img.format == "PNG"
+    with pytest.raises(ValueError):
+        save_background(tmp_path, GUILD_A, "join", b"not an image")
+    # Только картинка, без текста — тоже допустимое приветствие
+    GreetingMessage(enabled=True, channel_id="555555555555555551", card=CardConfig(enabled=True))
+    with pytest.raises(ValidationError):
+        CardConfig(background_image="../../.env")
+
+
+async def test_card_api(authed, app):
+    base = f"/api/guilds/{GUILD_A}/welcome"
+    r = await authed.post(f"{base}/card-preview", json={"kind": "join", "card": {"enabled": True}})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content[:4] == b"\x89PNG"
+    up = await authed.put(f"{base}/leave/background", json={"data": base64.b64encode(_png()).decode()})
+    assert up.status_code == 200
+    name = up.json()["background_image"]
+    cfg = (await authed.get(f"/api/guilds/{GUILD_A}/config/welcome")).json()
+    assert cfg["leave"]["card"]["background_image"] is None  # сохраняется только кнопкой «Сохранить»
+    cfg["leave"]["card"]["background_image"] = name
+    assert (await authed.put(f"/api/guilds/{GUILD_A}/config/welcome", json=cfg)).status_code == 200
+    assert (await authed.get(f"{base}/background/{name}")).status_code == 200
+    assert (await authed.get(f"/api/guilds/{GUILD_B}/welcome/background/{name}")).status_code == 404
+    r = await authed.post(f"{base}/card-preview", json={"kind": "leave", "card": cfg["leave"]["card"]})
+    assert r.status_code == 200
+    # две новые загрузки подряд: сохранённая остаётся, промежуточная удаляется
+    first = (await authed.put(f"{base}/leave/background", json={"data": base64.b64encode(_png()).decode()})).json()
+    second = (await authed.put(f"{base}/leave/background", json={"data": base64.b64encode(_png()).decode()})).json()
+    files = {p.name for p in (app.settings.data_dir / "cards").iterdir()}
+    assert files == {name, second["background_image"]} and first["background_image"] not in files
+    bad = await authed.put(f"{base}/join/background", json={"data": base64.b64encode(b"zzz").decode()})
+    assert bad.status_code == 422

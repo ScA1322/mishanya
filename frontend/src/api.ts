@@ -63,6 +63,26 @@ export async function api<T = any>(method: string, path: string, body?: unknown)
   return data as T;
 }
 
+/** POST с JSON-телом и бинарным ответом (например, PNG предпросмотра). */
+export async function postBlob(path: string, body: unknown): Promise<Blob> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  let res: Response;
+  try {
+    res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body), credentials: "same-origin" });
+  } catch {
+    throw new ApiError(0, "Нет связи с backend Mishanya. Проверьте, что приложение запущено (start.bat).");
+  }
+  if (!res.ok) {
+    if (res.status === 401) onUnauthorized?.();
+    let data: any = null;
+    try { data = await res.json(); } catch { /* не JSON */ }
+    const { message, details } = describe(data?.detail ?? data, res.status);
+    throw new ApiError(res.status, message, details);
+  }
+  return res.blob();
+}
+
 export const get = <T = any>(path: string) => api<T>("GET", path);
 export const post = <T = any>(path: string, body?: unknown) => api<T>("POST", path, body ?? {});
 export const put = <T = any>(path: string, body?: unknown) => api<T>("PUT", path, body ?? {});

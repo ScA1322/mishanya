@@ -2,10 +2,11 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useMeta } from "../App";
 import { useModuleConfig, usePreview, useUnsavedWarning } from "../hooks";
-import type { EmbedConfig } from "../types";
+import { CardEditor } from "../cardEditor";
+import type { CardConfig, EmbedConfig } from "../types";
 import { Card, ChannelSelect, DiscordPreview, EmbedEditor, ErrorBox, Field, Loading, PageHeader, SaveBar, Tabs, TemplateInput, ToggleRow } from "../ui";
 
-interface Greeting { enabled: boolean; channel_id: string | null; message: string; embed: EmbedConfig }
+interface Greeting { enabled: boolean; channel_id: string | null; message: string; embed: EmbedConfig; card: CardConfig }
 interface WelcomeConfig { join: Greeting; leave: Greeting; dm_enabled: boolean; dm_message: string }
 
 const VARS = ["user", "username", "display_name", "user_id", "server", "member_count", "choose"];
@@ -16,7 +17,7 @@ function GreetingEditor({ guildId, value, onChange, kind }: { guildId: string; v
   const preview = usePreview(guildId, value.message, value.embed);
   const errors: string[] = [];
   if (value.enabled && !value.channel_id) errors.push("Выберите канал");
-  if (value.enabled && !value.message.trim() && !value.embed.enabled) errors.push("Заполните текст или включите embed");
+  if (value.enabled && !value.message.trim() && !value.embed.enabled && !value.card.enabled) errors.push("Заполните текст, включите embed или картинку-баннер");
   return (
     <div className="stack">
       <Card>
@@ -35,9 +36,14 @@ function GreetingEditor({ guildId, value, onChange, kind }: { guildId: string; v
           </div>
         </Card>
         <Card title="Предпросмотр" subtitle="Переменные подставляются так же, как это сделает бот">
-          <DiscordPreview data={preview.data} loading={preview.loading} />
+          <DiscordPreview data={preview.data} loading={preview.loading}>
+            {value.card.enabled && !value.embed.enabled && <div className="small muted mt">+ картинка-баннер (предпросмотр ниже)</div>}
+          </DiscordPreview>
         </Card>
       </div>
+      <Card title="Картинка с аватаркой">
+        <CardEditor guildId={guildId} kind={kind} value={value.card} vars={vars} onChange={(card) => onChange((g) => { g.card = card; })} />
+      </Card>
     </div>
   );
 }

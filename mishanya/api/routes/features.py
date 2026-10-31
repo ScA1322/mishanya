@@ -1,4 +1,4 @@
-"""API тикетов и меню с кнопками."""
+"""API тикетов, меню с кнопками, музыки и картинок приветствий."""
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +7,14 @@ import binascii
 
 import discord
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from ...bot.utils import UserFacingError, human_error
-from ...schemas import MenuConfig, TicketsConfig
+from ...schemas import CardConfig, MenuConfig, TicketsConfig, WelcomeConfig
+from ...services.cards import background_path, render_card, save_background
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
+from ...services.templates import SAMPLE_VALUES, member_values
 from ..auth import require_auth
 from ..deps import discord_guild, get_app, guild_id_dep, iso, user_label
 from .guilds import validation_detail
@@ -219,3 +221,65 @@ async def music_control(request: Request, action: str = Path(pattern=r"^(skip|st
     cog = _bot_cog(request, "Music")
     await _discord_call(cog.control(guild_id, action))
     return {**cog.state(guild_id), "bot": True}
+
+
+# ---------------------------------------------------------------- картинки приветствий
+
+class CardPreviewIn(BaseModel):
+    kind: str = Field("join", pattern=r"^(join|leave)$")
+    card: CardConfig
+
+
+def _card_dir(request: Request):  # noqa: ANN202
+    return get_app(request).settings.data_dir / "cards"
+
+
+@router.post("/welcome/card-preview")
+async def card_preview(body: CardPreviewIn, request: Request, guild_id: int = Depends(guild_id_dep)) -> Response:
+    """Рисует баннер так же, как бот, — на примере аватара и имени бота."""
+    app = get_app(request)
+    values = dict(SAMPLE_VALUES)
+    avatar = None
+    dg = discord_guild(app, guild_id)
+    if dg is not None:
+        values.update(member_values(dg.me, guild=dg))
+        try:
+            avatar = await dg.me.display_avatar.replace(size=256, static_format="png").read()
+        except discord.HTTPException:
+            avatar = None
+    png = await asyncio.to_thread(render_card, body.card, values, avatar,
+                                  background_path(_card_dir(request), body.card.background_image))
+    return Response(png, media_type="image/png")
+
+
+@router.put("/welcome/{kind}/background")
+async def upload_background(body: ImageIn, request: Request, kind: str = Path(pattern=r"^(join|leave)$"),
+                            guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Загружает картинку фона. В настройки она попадает при сохранении страницы приветствий."""
+    app = get_app(request)
+    raw = body.data.split(",", 1)[1] if body.data.startswith("data:") else body.data
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(422, "Файл изображения повреждён") from None
+    card_dir = _card_dir(request)
+    # Неиспользуемые загрузки этого же баннера удаляем, сохранённую в настройках — оставляем.
+    cfg = await app.config.get_typed(guild_id, "welcome", WelcomeConfig)
+    keep = (cfg.join if kind == "join" else cfg.leave).card.background_image
+    try:
+        name = save_background(card_dir, guild_id, kind, data)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    for old in card_dir.glob(f"{guild_id}-{kind}-*"):
+        if old.name not in (name, keep):
+            old.unlink(missing_ok=True)
+    return {"background_image": name}
+
+
+@router.get("/welcome/background/{name}")
+async def get_background(request: Request, name: str = Path(pattern=r"^[A-Za-z0-9_.-]{1,100}$"),
+                         guild_id: int = Depends(guild_id_dep)) -> FileResponse:
+    path = background_path(_card_dir(request), name) if name.startswith(f"{guild_id}-") else None
+    if path is None:
+        raise HTTPException(404, "Картинка не найдена")
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
