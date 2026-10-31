@@ -91,6 +91,9 @@ def setup_logging(settings: Settings) -> ErrorBuffer:
         h.setFormatter(fmt)
         root.addHandler(h)
     logging.getLogger("discord.http").setLevel(logging.WARNING)
+    # «Shard ID None has successfully RESUMED session» — штатное переподключение к Discord, не ошибка.
+    logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+    logging.getLogger("discord.voice_state").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     return errors
 

@@ -1,20 +1,30 @@
-"""Автообновление из GitHub через git: проверка, загрузка (fast-forward) и перезапуск через start.bat.
+"""Автообновление из GitHub и перезапуск через start.bat.
 
-Обновляется только установка, сделанная через `git clone`. Перед обновлением создаётся резервная копия базы.
-Зависимости Python переустанавливает start.bat после выхода процесса: на Windows нельзя заменить
-модули, загруженные работающим приложением.
+Два режима:
+* git — копия получена через `git clone` и git установлен: fetch + merge --ff-only;
+* archive — копия скачана ZIP-архивом (или git не установлен): версия хранится в файле `.version`,
+  новая версия скачивается архивом с GitHub и распаковывается поверх, не трогая `.env`, `data`,
+  `backups` и `.venv`.
+
+Перед обновлением создаётся резервная копия базы. Зависимости Python переустанавливает start.bat после
+выхода процесса: на Windows нельзя заменить модули, загруженные работающим приложением.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
+import json
 import logging
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..db import utcnow
 from ..db.backup import create_backup
@@ -28,6 +38,14 @@ LAUNCHER_ENV = "MISHANYA_LAUNCHER"
 GIT_TIMEOUT = 120
 BUILD_DIR = "frontend/dist/"
 
+GITHUB_REPO = os.environ.get("MISHANYA_UPDATE_REPO", "ScA1322/mishanya")
+GITHUB_BRANCH = os.environ.get("MISHANYA_UPDATE_BRANCH", "main")
+VERSION_FILE = ".version"
+MANIFEST_FILE = ".update-manifest"
+MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+# Пользовательские данные и окружение — архив их никогда не перезаписывает и не удаляет.
+PROTECTED = {".env", ".git", ".venv", "data", "backups", VERSION_FILE, MANIFEST_FILE, DEPS_FLAG}
+
 
 class UpdateError(Exception):
     """Обновление невозможно; текст показывается пользователю."""
@@ -36,6 +54,7 @@ class UpdateError(Exception):
 @dataclass
 class UpdateState:
     supported: bool = False
+    mode: str | None = None  # git | archive
     reason: str | None = None
     branch: str | None = None
     upstream: str | None = None
@@ -58,6 +77,7 @@ class UpdateService:
         self.backup_dir = backup_dir
         self.state = UpdateState()
         self._lock = asyncio.Lock()
+        self._remote_sha: str | None = None
 
     @staticmethod
     def launched_by_script() -> bool:
@@ -87,14 +107,18 @@ class UpdateService:
             raise UpdateError(f"git {args[0]}: {err[-1] if err else f'код {res.returncode}'}")
         return out
 
+    def _use_git(self) -> bool:
+        return (self.repo_dir / ".git").exists() and shutil.which("git") is not None
+
     def _probe(self) -> None:
         """Заполняет сведения о репозитории или объясняет, почему обновление недоступно."""
         st = self.state
-        if not (self.repo_dir / ".git").exists():
-            st.supported, st.reason = False, ("Mishanya установлена не через git clone (например, из ZIP-архива). "
-                                              "Автообновление работает только для копии, полученной командой "
-                                              "git clone.")
+        if not self._use_git():
+            st.mode, st.supported, st.reason = "archive", True, None
+            st.branch, st.upstream = GITHUB_BRANCH, f"github.com/{GITHUB_REPO}"
+            st.current = (self._read_version() or "")[:7] or None
             return
+        st.mode = "git"
         st.branch = self._git("rev-parse", "--abbrev-ref", "HEAD")
         try:
             st.upstream = self._git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
@@ -109,6 +133,9 @@ class UpdateService:
         self._probe()
         st = self.state
         if not st.supported:
+            return
+        if st.mode == "archive":
+            self._archive_check(fetch_timeout)
             return
         remote_name = st.upstream.split("/", 1)[0] if st.upstream else "origin"
         self._git("fetch", "--quiet", remote_name, timeout=fetch_timeout)
@@ -136,6 +163,8 @@ class UpdateService:
             raise UpdateError(st.reason or "Обновление недоступно")
         if not st.behind:
             raise UpdateError("Обновлений нет: установлена последняя версия.")
+        if st.mode == "archive":
+            return self._archive_apply()
         if st.ahead:
             raise UpdateError(f"В локальной копии есть {st.ahead} собственных коммитов, которых нет на GitHub. "
                               "Автоматическое обновление отключено, чтобы их не потерять — обновите вручную (git pull).")
@@ -160,6 +189,130 @@ class UpdateService:
         st.last_update = utcnow()
         st.restart_required = True
         log.info("Mishanya обновлена: %s → %s", old, st.current)
+        return st.current
+
+    # ------------------------------------------------------------ архив с GitHub (установка из ZIP)
+
+    def _read_version(self) -> str | None:
+        path = self.repo_dir / VERSION_FILE
+        try:
+            sha = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
+
+    @staticmethod
+    def _http(url: str, timeout: int, limit: int = 5 * 1024 * 1024) -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mishanya-updater",
+                                                   "Accept": "application/vnd.github+json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — только https://*.github.com
+                data = resp.read(limit + 1)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise UpdateError(f"Репозиторий {GITHUB_REPO} не найден на GitHub или закрыт.") from None
+            if exc.code in (403, 429):
+                raise UpdateError("GitHub временно ограничил число запросов. Проверка повторится позже.") from None
+            raise UpdateError(f"GitHub ответил ошибкой {exc.code}.") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise UpdateError(f"Нет связи с GitHub ({reason}). Проверьте подключение к интернету.") from None
+        if len(data) > limit:
+            raise UpdateError("Ответ GitHub слишком большой.")
+        return data
+
+    def _api(self, path: str, timeout: int) -> dict:
+        data = self._http(f"https://api.github.com/repos/{GITHUB_REPO}/{path}", timeout)
+        try:
+            return json.loads(data)
+        except ValueError:
+            raise UpdateError("GitHub вернул непонятный ответ.") from None
+
+    @staticmethod
+    def _commit_info(c: dict) -> dict:
+        commit = c.get("commit") or {}
+        author = commit.get("author") or {}
+        return {"sha": str(c.get("sha", ""))[:7], "author": author.get("name", ""), "date": author.get("date", ""),
+                "subject": (commit.get("message") or "").splitlines()[0][:200] if commit.get("message") else ""}
+
+    def _archive_check(self, timeout: int) -> None:
+        st = self.state
+        latest = self._api(f"commits/{GITHUB_BRANCH}", timeout)
+        remote_sha = str(latest.get("sha", ""))
+        if len(remote_sha) != 40:
+            raise UpdateError("GitHub не сообщил номер последней версии.")
+        self._remote_sha = remote_sha
+        st.remote, st.ahead = remote_sha[:7], 0
+        current = self._read_version()
+        if current == remote_sha:
+            st.behind, st.commits = 0, []
+            return
+        commits: list[dict] = []
+        behind = 0
+        if current:
+            try:
+                cmp = self._api(f"compare/{current}...{remote_sha}", timeout)
+                behind = int(cmp.get("ahead_by") or 0)
+                commits = [self._commit_info(c) for c in (cmp.get("commits") or [])][::-1][:30]
+            except UpdateError:
+                behind = 0  # своей версии на GitHub нет — просто ставим последнюю
+        if not behind:
+            behind, commits = 1, [self._commit_info(latest)]
+        st.behind, st.commits = behind, commits
+
+    def _archive_apply(self) -> str:
+        st = self.state
+        sha = self._remote_sha
+        if not sha:
+            raise UpdateError("Сначала проверьте обновления.")
+        data = self._http(f"https://codeload.github.com/{GITHUB_REPO}/zip/{sha}", 180, MAX_ARCHIVE_BYTES)
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile:
+            raise UpdateError("Скачанный архив повреждён. Попробуйте ещё раз позже.") from None
+        files: dict[str, zipfile.ZipInfo] = {}
+        for info in archive.infolist():
+            parts = PurePosixPath(info.filename).parts
+            if info.is_dir() or len(parts) < 2:
+                continue
+            rel = PurePosixPath(*parts[1:])  # внутри архива всё лежит в папке <repo>-<sha>/
+            if rel.is_absolute() or ".." in rel.parts or rel.parts[0] in PROTECTED:
+                continue
+            files[rel.as_posix()] = info
+        if "mishanya/__init__.py" not in files or "start.bat" not in files:
+            raise UpdateError("В архиве с GitHub нет файлов Mishanya — обновление отменено.")
+        if self.db_path.exists():
+            create_backup(self.db_path, self.backup_dir, "update")
+        req_before = self._file_hash("requirements.txt"), self._file_hash("requirements-voice.txt")
+        for rel, info in files.items():
+            target = self.repo_dir / rel
+            content = archive.read(info)
+            if target.exists() and target.read_bytes() == content:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(target.name + ".mishanya-new")
+            tmp.write_bytes(content)
+            os.replace(tmp, target)
+        # Удаляем только файлы, которые сами ставили прошлым обновлением и которых больше нет в программе.
+        manifest = self.repo_dir / MANIFEST_FILE
+        try:
+            old_files = set(manifest.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            old_files = set()
+        for rel in sorted(old_files - files.keys()):
+            p = PurePosixPath(rel)
+            if rel and ".." not in p.parts and not p.is_absolute() and p.parts[0] not in PROTECTED:
+                (self.repo_dir / rel).unlink(missing_ok=True)
+        manifest.write_text("\n".join(sorted(files)) + "\n", encoding="utf-8")
+        if (self._file_hash("requirements.txt"), self._file_hash("requirements-voice.txt")) != req_before:
+            (self.repo_dir / DEPS_FLAG).write_text("requirements changed\n", encoding="utf-8")
+        old = st.current
+        (self.repo_dir / VERSION_FILE).write_text(sha + "\n", encoding="utf-8")
+        st.current = sha[:7]
+        st.behind, st.commits = 0, []
+        st.last_update = utcnow()
+        st.restart_required = True
+        log.info("Mishanya обновлена из архива GitHub: %s → %s", old or "неизвестная версия", st.current)
         return st.current
 
     # ------------------------------------------------------------ публичный интерфейс

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./icons";
 import { Markdown } from "./markdown";
 import type { DiscordResources, EmbedConfig, Role } from "./types";
@@ -336,7 +337,8 @@ export function Picker({ items, value, onChange, placeholder = "— не выб�
           </>
         )}
       </button>
-      {open && pos && (
+      {/* Меню выносится в body: внутри <label> браузер перенаправлял бы клики по пунктам на кнопку. */}
+      {open && pos && createPortal(
         <div ref={popRef} className="picker-pop" style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }} onKeyDown={onKey}>
           <div className="picker-search">
             <Icon name="search" size={14} className="muted" />
@@ -362,11 +364,17 @@ export function Picker({ items, value, onChange, placeholder = "— не выб�
               );
             })}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
 }
+
+/** Клик по пустому месту или названию плашки внутри <label> не должен «нажимать» первую кнопку (крестик). */
+const keepLabelClicks = (e: React.MouseEvent) => {
+  if (!(e.target as HTMLElement).closest("button, input")) e.preventDefault();
+};
 
 /* ------------------------------------------------------------------ каналы и роли */
 
@@ -425,10 +433,13 @@ export function MultiRoleSelect({ value, onChange, assignableOnly = false }: {
   value: string[]; onChange: (v: string[]) => void; assignableOnly?: boolean;
 }) {
   const items = useRoleItems(assignableOnly).filter((i) => !value.includes(i.id));
+  const { connected } = useResources();
+  const emptyText = !connected ? "Бот не подключён — роли недоступны"
+    : value.length ? "Все роли уже выбраны" : "На сервере нет ролей (кроме ролей ботов). Создайте роль в настройках сервера Discord.";
   return (
-    <div className="chips">
+    <div className="chips" onClick={keepLabelClicks}>
       {value.map((id) => <RoleChip key={id} id={id} onRemove={() => onChange(value.filter((x) => x !== id))} />)}
-      <Picker items={items} value={null} trigger={<AddTrigger label="Роль" />} searchPlaceholder="Поиск роли…"
+      <Picker items={items} value={null} trigger={<AddTrigger label="Роль" />} searchPlaceholder="Поиск роли…" emptyText={emptyText}
         onChange={(v) => v && !value.includes(v) && onChange([...value, v])} />
     </div>
   );
@@ -437,11 +448,11 @@ export function MultiRoleSelect({ value, onChange, assignableOnly = false }: {
 export function MultiChannelSelect({ value, onChange, categories = false }: {
   value: string[]; onChange: (v: string[]) => void; categories?: boolean;
 }) {
-  const { categories: cats } = useResources();
+  const { categories: cats, connected } = useResources();
   const channelItems = useChannelItems(false);
   const all: PickerItem[] = categories ? cats.map((c) => ({ id: c.id, label: c.name, icon: "folder" as IconName })) : channelItems;
   return (
-    <div className="chips">
+    <div className="chips" onClick={keepLabelClicks}>
       {value.map((id) => {
         const item = all.find((i) => i.id === id);
         return (
@@ -454,6 +465,7 @@ export function MultiChannelSelect({ value, onChange, categories = false }: {
       })}
       <Picker items={all.filter((i) => !value.includes(i.id))} value={null} trigger={<AddTrigger label={categories ? "Категория" : "Канал"} />}
         searchPlaceholder={categories ? "Поиск категории…" : "Поиск канала…"}
+        emptyText={!connected ? "Бот не подключён — список недоступен" : categories ? "Категорий не найдено" : "Каналов не найдено"}
         onChange={(v) => v && !value.includes(v) && onChange([...value, v])} />
     </div>
   );
@@ -478,7 +490,7 @@ export function TagsInput({ value, onChange, placeholder, pattern }: {
   return (
     <div className="stack" style={{ gap: 8 }}>
       {value.length > 0 && (
-        <div className="chips">
+        <div className="chips" onClick={keepLabelClicks}>
           {value.map((v) => (
             <span key={v} className="chip">{v}
               <button type="button" onClick={() => onChange(value.filter((x) => x !== v))} aria-label="Убрать">×</button>

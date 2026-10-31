@@ -198,17 +198,66 @@ async def test_update_refuses_local_changes(repos, tmp_path):
     assert (local / "app.txt").read_text(encoding="utf-8") == "мои правки\n"
 
 
-async def test_update_not_git(tmp_path):
-    state = await UpdateService(tmp_path, tmp_path / "db", tmp_path / "b").check()
-    assert not state.supported and "git clone" in state.reason
+def _fake_github(monkeypatch, files: dict[str, str], sha: str = "a" * 40):
+    """Подменяет обращения к GitHub: последняя версия sha, архив с files."""
+    import io
+    import json
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, text in files.items():
+            z.writestr(f"mishanya-{sha}/{name}", text)
+    commit = {"sha": sha, "commit": {"message": "Новая версия\n\nподробности",
+                                     "author": {"name": "dev", "date": "2026-10-31T10:00:00Z"}}}
+
+    def fake_http(url, timeout, limit=0):  # noqa: ANN001, ARG001
+        if url.endswith("/commits/main"):
+            return json.dumps(commit).encode()
+        if "/compare/" in url:
+            return json.dumps({"ahead_by": 2, "commits": [commit, commit]}).encode()
+        if "codeload.github.com" in url:
+            return buf.getvalue()
+        raise AssertionError(url)
+
+    monkeypatch.setattr(UpdateService, "_http", staticmethod(fake_http))
+
+
+async def test_update_from_archive(tmp_path, monkeypatch):
+    base = tmp_path / "app"
+    (base / "mishanya").mkdir(parents=True)
+    (base / "mishanya" / "__init__.py").write_text("old", encoding="utf-8")
+    (base / "mishanya" / "gone.py").write_text("old", encoding="utf-8")
+    (base / ".env").write_text("DISCORD_TOKEN=secret", encoding="utf-8")
+    (base / "requirements.txt").write_text("a==1", encoding="utf-8")
+    (base / ".update-manifest").write_text("mishanya/gone.py\nmishanya/__init__.py\n", encoding="utf-8")
+    _fake_github(monkeypatch, {"mishanya/__init__.py": "new", "start.bat": "@echo off", "requirements.txt": "a==2",
+                               ".env": "DISCORD_TOKEN=hacked", "data/x.txt": "x", "../evil.txt": "x"})
+    svc = UpdateService(base, tmp_path / "none.db", tmp_path / "b")
+    state = await svc.check()
+    assert state.supported and state.mode == "archive" and state.current is None and state.behind == 1
+    assert state.commits[0]["subject"] == "Новая версия"
+    assert await svc.apply() == "aaaaaaa"
+    assert (base / "mishanya" / "__init__.py").read_text(encoding="utf-8") == "new"
+    assert not (base / "mishanya" / "gone.py").exists()
+    assert (base / ".env").read_text(encoding="utf-8") == "DISCORD_TOKEN=secret"
+    assert not (base / "data").exists() and not (tmp_path / "evil.txt").exists()
+    assert (base / DEPS_FLAG).exists() and (base / ".version").read_text().strip() == "a" * 40
+    state = await svc.check()
+    assert state.current == "aaaaaaa" and state.behind == 0
+
+    (base / ".version").write_text("b" * 40, encoding="utf-8")
+    state = await svc.check()
+    assert state.behind == 2 and len(state.commits) == 2
 
 
 async def test_update_api(authed, app, monkeypatch):
-    monkeypatch.setattr(app.updater, "repo_dir", app.settings.data_dir)  # не git-репозиторий
+    monkeypatch.setattr(app.updater, "repo_dir", app.settings.data_dir)  # установка из архива
+    _fake_github(monkeypatch, {"mishanya/__init__.py": "x"})
     data = (await authed.post("/api/update/check")).json()
-    assert data["supported"] is False and data["launcher"] is False
+    assert data["supported"] is True and data["mode"] == "archive" and data["launcher"] is False
     r = await authed.post("/api/update/apply")
-    assert r.status_code == 409
+    assert r.status_code == 409  # в архиве нет start.bat — не похоже на Mishanya
     s = (await authed.get("/api/settings")).json()
     assert s["auto_update_enabled"] is True and s["update_check_interval_hours"] == 6
 

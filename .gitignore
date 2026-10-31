@@ -16,3 +16,8 @@ frontend/*.tsbuildinfo
 
 # Флаг автообновления: start.bat переустановит зависимости
 .update-deps
+
+# Версия установки из ZIP-архива и список её файлов (автообновление без git)
+.version
+.update-manifest
+*.mishanya-new

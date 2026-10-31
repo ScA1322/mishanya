@@ -269,7 +269,7 @@ _restart_tasks: set[asyncio.Task] = set()
 def _update_out(app) -> dict:  # noqa: ANN001
     st = app.updater.state
     return {
-        "supported": st.supported, "reason": st.reason, "branch": st.branch, "upstream": st.upstream,
+        "supported": st.supported, "mode": st.mode, "reason": st.reason, "branch": st.branch, "upstream": st.upstream,
         "current": st.current, "remote": st.remote, "behind": st.behind, "ahead": st.ahead, "commits": st.commits,
         "last_check": iso(st.last_check), "last_error": st.last_error, "last_update": iso(st.last_update),
         "busy": st.busy, "restart_required": st.restart_required,

@@ -127,8 +127,15 @@ class Music(commands.Cog):
             raise UserFacingError(f"У бота нет прав подключаться и говорить в {channel.mention}.")
         try:
             return await channel.connect(timeout=20, self_deaf=True)
-        except (asyncio.TimeoutError, discord.ClientException) as exc:
-            raise UserFacingError(f"Не удалось подключиться к голосовому каналу: {exc or 'тайм-аут'}") from None
+        except asyncio.TimeoutError:
+            raise UserFacingError("Не удалось подключиться к голосовому каналу: Discord не ответил за 20 секунд. "
+                                  "Проверьте, что антивирус или брандмауэр не блокирует Python (UDP-трафик).") from None
+        except RuntimeError as exc:  # discord.py: нет PyNaCl/davey
+            log.error("Голос недоступен: %s", exc)
+            raise UserFacingError(VOICE_MISSING) from None
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Сервер %s: ошибка подключения к голосовому каналу", guild.id)
+            raise UserFacingError(f"Не удалось подключиться к голосовому каналу: {exc}") from None
 
     # ------------------------------------------------------------ воспроизведение
 
@@ -160,9 +167,21 @@ class Music(commands.Cog):
                     await self._notify(guild, player, f"⚠️ Пропускаю «{track.title}»: {exc}")
                     player.queue.current = None
                     continue
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("Сервер %s: не удалось подготовить трек %s", guild_id, track.page_url)
+                    await self._notify(guild, player, f"⚠️ Пропускаю «{track.title}»: {exc}")
+                    player.queue.current = None
+                    continue
                 player.cancel_idle()
                 player.started_at, player.paused_at = time.monotonic(), None
-                vc.play(source, after=lambda err, gid=guild_id: self._after(gid, err))
+                try:
+                    vc.play(source, after=lambda err, gid=guild_id: self._after(gid, err))
+                except Exception as exc:  # noqa: BLE001 — например, не загрузилась библиотека Opus
+                    log.exception("Сервер %s: ошибка воспроизведения", guild_id)
+                    source.cleanup()
+                    player.queue.clear()
+                    await self._notify(guild, player, f"❌ Не удалось включить музыку: {exc}")
+                    return
                 embed = discord.Embed(title="🎵 Сейчас играет", description=track_line(track), color=COLOR_INFO)
                 if track.artist:
                     embed.set_footer(text=track.artist)
@@ -173,10 +192,20 @@ class Music(commands.Cog):
             player.queue.current = None
             self._schedule_idle(guild_id)
 
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if not voice_available():
+            log.warning("Музыка не будет работать: %s", VOICE_MISSING)
+
     def _after(self, guild_id: int, error: Exception | None) -> None:
         """Вызывается discord.py из потока воспроизведения после окончания трека."""
         if error:
             log.warning("Ошибка воспроизведения на сервере %s: %s", guild_id, error)
+            player = self.players.get(guild_id)
+            guild = self.bot.get_guild(guild_id)
+            if player is not None and guild is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self._notify(guild, player, f"⚠️ Ошибка воспроизведения: {error}"), self.bot.loop)
         asyncio.run_coroutine_threadsafe(self._play_next(guild_id), self.bot.loop)
 
     async def _notify(self, guild: discord.Guild, player: GuildPlayer, text: str | None = None,
