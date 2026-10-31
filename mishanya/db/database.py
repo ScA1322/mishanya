@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, ButtonMenu, Ticket
+from .models import Base, ButtonMenu, TempVoiceChannel, Ticket
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +29,14 @@ def _m2_tickets_menus(conn: Connection) -> None:
     Base.metadata.create_all(conn, tables=[Ticket.__table__, ButtonMenu.__table__])
 
 
+def _m3_temp_voice(conn: Connection) -> None:
+    Base.metadata.create_all(conn, tables=[TempVoiceChannel.__table__])
+
+
 MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _m1_initial),
     (2, _m2_tickets_menus),
+    (3, _m3_temp_voice),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

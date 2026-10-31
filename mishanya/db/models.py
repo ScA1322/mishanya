@@ -243,3 +243,14 @@ class ButtonMenu(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TempVoiceChannel(Base):
+    """Голосовая комната, созданная через канал-создатель; удаляется, когда в ней никого не осталось."""
+
+    __tablename__ = "temp_voice_channels"
+    channel_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), index=True)
+    owner_id: Mapped[int] = mapped_column(BigInteger)
+    hub_id: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

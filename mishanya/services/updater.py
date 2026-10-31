@@ -105,13 +105,13 @@ class UpdateService:
         st.current = self._git("rev-parse", "--short", "HEAD")
         st.supported, st.reason = True, None
 
-    def _check_sync(self) -> None:
+    def _check_sync(self, fetch_timeout: int = GIT_TIMEOUT) -> None:
         self._probe()
         st = self.state
         if not st.supported:
             return
         remote_name = st.upstream.split("/", 1)[0] if st.upstream else "origin"
-        self._git("fetch", "--quiet", remote_name)
+        self._git("fetch", "--quiet", remote_name, timeout=fetch_timeout)
         st.remote = self._git("rev-parse", "--short", "@{u}")
         counts = self._git("rev-list", "--left-right", "--count", "HEAD...@{u}").split()
         st.ahead, st.behind = int(counts[0]), int(counts[1])
@@ -164,11 +164,11 @@ class UpdateService:
 
     # ------------------------------------------------------------ публичный интерфейс
 
-    async def check(self) -> UpdateState:
+    async def check(self, fetch_timeout: int = GIT_TIMEOUT) -> UpdateState:
         async with self._lock:
             self.state.busy = True
             try:
-                await asyncio.to_thread(self._check_sync)
+                await asyncio.to_thread(self._check_sync, fetch_timeout)
                 self.state.last_error = None
             except UpdateError as exc:
                 self.state.last_error = str(exc)

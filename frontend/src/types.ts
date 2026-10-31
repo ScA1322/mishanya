@@ -8,7 +8,8 @@ export type ModuleName =
   | "logging"
   | "utility"
   | "tickets"
-  | "music";
+  | "music"
+  | "tempvoice";
 
 export interface GuildSummary {
   id: string;

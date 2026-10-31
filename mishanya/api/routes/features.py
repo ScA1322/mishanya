@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from ...bot.utils import UserFacingError, human_error
-from ...schemas import CardConfig, MenuConfig, TicketsConfig, WelcomeConfig
+from ...schemas import CardConfig, MenuConfig, TempVoiceConfig, TicketsConfig, VoiceHub, WelcomeConfig
 from ...services.cards import background_path, render_card, save_background
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
 from ...services.templates import SAMPLE_VALUES, member_values
@@ -283,3 +283,41 @@ async def get_background(request: Request, name: str = Path(pattern=r"^[A-Za-z0-
     if path is None:
         raise HTTPException(404, "Картинка не найдена")
     return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ---------------------------------------------------------------- голосовые комнаты
+
+@router.get("/tempvoice/rooms")
+async def tempvoice_rooms(request: Request, guild_id: int = Depends(guild_id_dep)) -> list[dict]:
+    app = get_app(request)
+    dg = discord_guild(app, guild_id)
+    out = []
+    for r in await app.tempvoice.list(guild_id):
+        ch = dg.get_channel(r.channel_id) if dg else None
+        out.append({"channel_id": str(r.channel_id), "name": ch.name if ch else None,
+                    "members": len(ch.members) if isinstance(ch, discord.VoiceChannel) else None,
+                    "owner_id": str(r.owner_id), "owner_name": user_label(app, guild_id, r.owner_id),
+                    "created_at": iso(r.created_at)})
+    return out
+
+
+class CreateHubIn(BaseModel):
+    name: str = Field("➕ Создать комнату", min_length=1, max_length=100)
+    category_id: str | None = Field(None, pattern=r"^\d{15,22}$")
+
+
+@router.post("/tempvoice/hub")
+async def tempvoice_create_hub(body: CreateHubIn, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Бот сам создаёт голосовой канал-создатель и добавляет его в настройки (модуль включается)."""
+    app = get_app(request)
+    cfg = await app.config.get_typed(guild_id, "tempvoice", TempVoiceConfig)
+    if len(cfg.hubs) >= 10:
+        raise HTTPException(409, "Максимум 10 каналов-создателей")
+    cog = _bot_cog(request, "TempVoice")
+    channel = await _discord_call(cog.create_hub(guild_id, int(body.category_id) if body.category_id else None,
+                                                 body.name.strip()))
+    new = cfg.model_copy(deep=True)
+    new.enabled = True
+    new.hubs.append(VoiceHub(channel_id=str(channel.id), category_id=body.category_id))
+    await app.config.set(guild_id, "tempvoice", new)
+    return {"channel_id": str(channel.id), "name": channel.name, "config": new.model_dump(mode="json")}

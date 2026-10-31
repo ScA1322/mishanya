@@ -341,6 +341,30 @@ class MusicConfig(Strict):
     idle_minutes: int = Field(5, ge=1, le=120)  # выйти из канала, если ничего не играет
 
 
+# ---------------------------------------------------------------- Голосовые комнаты
+
+class VoiceHub(Strict):
+    """Канал-создатель: зашёл в него — бот создал личную голосовую комнату и перенёс туда."""
+
+    channel_id: Snowflake
+    category_id: OptSnowflake = None  # пусто — та же категория, что у канала-создателя
+    name_template: str = Field("🔊 Комната {display_name}", min_length=1, max_length=100)
+    user_limit: int = Field(0, ge=0, le=99)  # 0 — без ограничения
+    owner_manage: bool = True  # владелец может переименовать, ограничить и выгонять из своей комнаты
+
+
+class TempVoiceConfig(Strict):
+    enabled: bool = False
+    hubs: list[VoiceHub] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def _unique(self) -> "TempVoiceConfig":
+        ids = [h.channel_id for h in self.hubs]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Один канал-создатель добавлен дважды")
+        return self
+
+
 # ---------------------------------------------------------------- Прочее
 
 class UtilityConfig(Strict):
@@ -359,6 +383,7 @@ MODULES: dict[str, type[Strict]] = {
     "utility": UtilityConfig,
     "tickets": TicketsConfig,
     "music": MusicConfig,
+    "tempvoice": TempVoiceConfig,
 }
 
 

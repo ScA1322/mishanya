@@ -91,13 +91,38 @@ async def open_browser_when_ready(settings: Settings, server: uvicorn.Server) ->
         await asyncio.sleep(0.1)
 
 
-UPDATE_FIRST_CHECK_DELAY = 90  # секунд после запуска
 UPDATE_LOOP_INTERVAL = 600
+STARTUP_FETCH_TIMEOUT = 30  # без интернета запуск не должен зависать надолго
+
+
+async def update_on_startup(app: App) -> bool:
+    """Проверяет GitHub до подключения к Discord. True — обновление установлено, нужен перезапуск."""
+    if not app.updater.launched_by_script():
+        return False  # без start.bat некому перезапустить приложение — только периодическая проверка
+    try:
+        if not (await app.config.get_global()).auto_update_enabled:
+            return False
+        log.info("Проверяю обновления на GitHub…")
+        state = await app.updater.check(fetch_timeout=STARTUP_FETCH_TIMEOUT)
+        if not state.supported or state.last_error:
+            log.info("Обновление при запуске пропущено: %s", state.reason or state.last_error)
+            return False
+        if not state.behind:
+            log.info("Установлена последняя версия (%s)", state.current)
+            return False
+        log.info("Найдено обновление (%d новых коммитов) — устанавливаю", state.behind)
+        await app.updater.apply()
+        return True
+    except UpdateError as exc:
+        log.warning("Обновление при запуске не выполнено, запускаю текущую версию: %s", exc)
+    except Exception:  # noqa: BLE001
+        log.exception("Ошибка обновления при запуске, запускаю текущую версию")
+    return False
 
 
 async def auto_update_loop(app: App, server: uvicorn.Server) -> None:
     """Периодически проверяет GitHub; при запуске через start.bat сам ставит обновление и перезапускается."""
-    await asyncio.sleep(UPDATE_FIRST_CHECK_DELAY)
+    await asyncio.sleep(UPDATE_LOOP_INTERVAL)
     while not server.should_exit:
         try:
             cfg = await app.config.get_global()
@@ -128,6 +153,10 @@ async def run(settings: Settings, app: App) -> int:
     except DatabaseError as exc:
         log.error("%s", exc)
         return 3
+    if await update_on_startup(app):
+        await app.db.dispose()
+        log.info("Перезапуск Mishanya после обновления…")
+        return RESTART_EXIT_CODE
     api = create_app(app)
     server = uvicorn.Server(uvicorn.Config(api, host=settings.panel_host, port=settings.panel_port,
                                            log_config=None, access_log=False, lifespan="off"))

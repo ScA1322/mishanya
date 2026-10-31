@@ -19,6 +19,8 @@ HELP_SECTIONS = {
     "⏰ Напоминания": "/remind, /reminders, /unremind",
     "🎵 Музыка (SoundCloud)": "/play, /skip, /stop, /pause, /resume, /queue, /nowplaying, /volume, /shuffle, "
                               "/loop, /leave",
+    "🔊 Голосовые комнаты": "Зайдите в канал-создатель — бот создаст вам комнату. "
+                           "/voice rename, /voice limit, /voice lock, /voice unlock, /voice kick, /voice claim",
     "🎫 Тикеты": "/ticket open, /ticket close, /ticket claim, /ticket add, /ticket remove",
     "✨ Команды сервера": "/cmd название — или с префиксом, например `!правила`",
 }

@@ -29,10 +29,11 @@ const MODULES: [ModuleName, string, IconName, string][] = [
   ["logging", "logs", "file", "Журнал событий сервера"],
   ["tickets", "tickets", "ticket", "Обращения в приватных каналах"],
   ["music", "music", "music", "Музыка из SoundCloud"],
+  ["tempvoice", "voice", "mic", "Личные голосовые каналы по входу"],
 ];
 
 /** Модули с единым переключателем enabled; приветствия включаются по отдельности на своей странице. */
-const TOGGLEABLE = new Set<ModuleName>(["leveling", "moderation", "automod", "autoroles", "custom_commands", "logging", "tickets", "music"]);
+const TOGGLEABLE = new Set<ModuleName>(["leveling", "moderation", "automod", "autoroles", "custom_commands", "logging", "tickets", "music", "tempvoice"]);
 
 export default function GuildOverview() {
   const { guildId } = useParams();

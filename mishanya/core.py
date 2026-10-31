@@ -21,6 +21,7 @@ from .services.leveling import LevelingService
 from .services.menus import MenuService
 from .services.moderation import ModerationService
 from .services.reminders import ReminderService
+from .services.tempvoice import TempVoiceService
 from .services.tickets import TicketService
 from .services.updater import UpdateService
 
@@ -115,5 +116,6 @@ class App:
         self.reminders = ReminderService(self.db)
         self.commands = CustomCommandService(self.db)
         self.tickets = TicketService(self.db)
+        self.tempvoice = TempVoiceService(self.db)
         self.menus = MenuService(self.db, self.settings.data_dir / "menus")
         self.updater = UpdateService(self.settings.base_dir, self.settings.db_path, self.settings.backup_dir)
