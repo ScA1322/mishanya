@@ -9,7 +9,7 @@ interface MusicConfig { enabled: boolean; dj_roles: string[]; default_volume: nu
 interface Track { title: string; url: string; artist: string; duration: number | null; thumbnail: string | null; requester_id: string | null }
 interface MusicState {
   bot: boolean; connected: boolean; channel: string | null; playing: boolean; paused: boolean; current: Track | null; elapsed: number;
-  queue: Track[]; loop: "off" | "track" | "queue"; volume: number | null;
+  queue: Track[]; loop: "off" | "track" | "queue"; volume: number | null; voice_available: boolean;
 }
 
 const LOOP: Record<MusicState["loop"], string> = { off: "выключен", track: "текущий трек", queue: "вся очередь" };
@@ -39,6 +39,12 @@ function Player({ guildId }: { guildId: string }) {
   if (!data) return <Card title="Сейчас играет"><Loading /></Card>;
   return (
     <Card title="Сейчас играет" subtitle={data.connected ? `Голосовой канал: ${data.channel}` : undefined}>
+      {!data.voice_available && (
+        <div className="alert alert-err" style={{ marginBottom: 12 }}>
+          Музыка недоступна: не установлен пакет для голосовых каналов Discord (davey). Для вашей версии Python его пока нет —
+          установите Python 3.14 с python.org и снова запустите setup.bat.
+        </div>
+      )}
       {!data.bot ? <Empty icon="🔌">Бот не подключён к Discord</Empty> : !data.current ? (
         <Empty icon="🎵">Ничего не играет. Зайдите в голосовой канал и напишите <code>/play название трека</code></Empty>
       ) : (

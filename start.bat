@@ -25,6 +25,7 @@ if exist ".update-deps" (
     echo Обновляю зависимости Python после обновления ...
     ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements.txt
     if not errorlevel 1 del ".update-deps" >nul 2>nul
+    ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q --only-binary=:all: -r requirements-voice.txt >nul 2>nul
 )
 ".venv\Scripts\python.exe" -m mishanya
 set "CODE=%errorlevel%"

@@ -55,6 +55,21 @@ def format_duration(seconds: int | float | None) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+VOICE_MISSING = ("Музыка недоступна: не установлен пакет для голосовых каналов Discord (davey). "
+                 "Для вашей версии Python его пока нет — установите Python 3.14 с python.org "
+                 "и снова запустите setup.bat.")
+
+
+def voice_available() -> bool:
+    """Без davey (шифрование DAVE) и PyNaCl discord.py не может подключиться к голосовому каналу."""
+    try:
+        import davey  # noqa: F401
+        import nacl  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def ffmpeg_executable() -> str:
     """FFmpeg из пакета imageio-ffmpeg (ставится вместе с зависимостями) или из PATH."""
     try:

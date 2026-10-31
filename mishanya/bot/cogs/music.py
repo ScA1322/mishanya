@@ -12,6 +12,7 @@ from discord.ext import commands
 from ...schemas import MusicConfig
 from ...services.music import (
     FFMPEG_BEFORE,
+    VOICE_MISSING,
     MusicError,
     MusicQueue,
     Track,
@@ -19,6 +20,7 @@ from ...services.music import (
     format_duration,
     resolve_stream,
     search,
+    voice_available,
 )
 from ..client import MishanyaBot
 from ..utils import COLOR_INFO, UserFacingError, ok_embed, require_guild, respond, safe_send
@@ -249,6 +251,7 @@ class Music(commands.Cog):
             "current": t(current) if current else None, "elapsed": player.elapsed if player and current else 0,
             "queue": [t(x) for x in player.queue.tracks] if player else [],
             "loop": player.queue.loop if player else "off", "volume": player.queue.volume if player else None,
+            "voice_available": voice_available(),
         }
 
     async def control(self, guild_id: int, action: str) -> None:
@@ -298,6 +301,8 @@ class Music(commands.Cog):
     async def play(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 300]) -> None:
         guild, member = require_guild(interaction)
         cfg = await self._check_enabled(guild)
+        if not voice_available():
+            raise UserFacingError(VOICE_MISSING)
         if member.voice is None or member.voice.channel is None:
             raise UserFacingError("Сначала зайдите в голосовой канал.")
         await interaction.response.defer(thinking=True)

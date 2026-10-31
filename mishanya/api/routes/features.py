@@ -14,6 +14,7 @@ from ...bot.utils import UserFacingError, human_error
 from ...schemas import CardConfig, MenuConfig, TempVoiceConfig, TicketsConfig, VoiceHub, WelcomeConfig
 from ...services.cards import background_path, render_card, save_background
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
+from ...services.music import voice_available
 from ...services.templates import SAMPLE_VALUES, member_values
 from ..auth import require_auth
 from ..deps import discord_guild, get_app, guild_id_dep, iso, user_label
@@ -211,7 +212,8 @@ async def music_state(request: Request, guild_id: int = Depends(guild_id_dep)) -
     cog = app.bot.get_cog("Music") if app.bot is not None and app.bot.is_ready() else None
     if cog is None:
         return {"connected": False, "channel": None, "playing": False, "paused": False, "current": None,
-                "elapsed": 0, "queue": [], "loop": "off", "volume": None, "bot": False}
+                "elapsed": 0, "queue": [], "loop": "off", "volume": None, "bot": False,
+                "voice_available": voice_available()}
     return {**cog.state(guild_id), "bot": True}  # type: ignore[attr-defined]
 
 
