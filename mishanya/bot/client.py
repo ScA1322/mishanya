@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -151,9 +152,55 @@ class MishanyaBot(commands.Bot):
         log.info("Синхронизировано slash-команд: %d", len(synced))
         return len(synced)
 
+    async def command_health(self) -> list[dict]:
+        """Почему бот может не отвечать на slash-команды: адрес Interactions Endpoint, скорость API, команды."""
+        steps: list[dict] = []
+        try:
+            start = time.monotonic()
+            info = await asyncio.wait_for(self.application_info(), 15)
+            first = time.monotonic() - start
+            start = time.monotonic()
+            await asyncio.wait_for(self.application_info(), 15)
+            rest = max(first, time.monotonic() - start)
+        except discord.HTTPException as exc:
+            return [{"name": "Связь с API Discord", "ok": False, "detail": f"запрос не прошёл: {exc}"}]
+        except (OSError, asyncio.TimeoutError) as exc:
+            return [{"name": "Связь с API Discord", "ok": False, "detail": (
+                f"discord.com недоступен ({exc}). Бот получает события, но не может отвечать. "
+                "Нужен VPN или обход блокировки, который работает для всех программ, а не только для браузера.")}]
+        endpoint = getattr(info, "interactions_endpoint_url", None)
+        steps.append({"name": "Interactions Endpoint URL", "ok": not endpoint, "detail": (
+            "не задан — команды приходят боту" if not endpoint else
+            f"задан адрес {endpoint}: Discord отправляет команды туда, а не боту, поэтому «приложение не отвечает». "
+            "Откройте discord.com/developers/applications → ваше приложение → General Information, "
+            "очистите поле Interactions Endpoint URL и сохраните.")})
+        steps.append({"name": "Скорость ответа API Discord", "ok": rest < 1.5, "detail": (
+            f"{rest:.2f} с" + ("" if rest < 1.5 else
+                              " — слишком медленно: Discord ждёт ответ на команду не дольше 3 секунд. "
+                              "Обычно виноват VPN/обход блокировки или плохой интернет на этом компьютере."))})
+        try:
+            remote = {c.name for c in await self.tree.fetch_commands()}
+            local = {c.name for c in self.tree.get_commands()}
+            missing = sorted(local - remote)
+            steps.append({"name": "Slash-команды в Discord", "ok": not missing, "detail": (
+                f"зарегистрировано {len(remote)}" if not missing else
+                f"не зарегистрированы: {', '.join('/' + m for m in missing[:10])}. Нажмите «Синхронизировать "
+                "команды» на странице диагностики.")})
+        except discord.HTTPException as exc:
+            steps.append({"name": "Slash-команды в Discord", "ok": False, "detail": str(exc)})
+        return steps
+
     async def on_ready(self) -> None:
         assert self.user is not None
         log.info("Mishanya подключён как %s (%s), серверов: %d", self.user, self.user.id, len(self.guilds))
+        if not getattr(self, "_health_logged", False):
+            self._health_logged = True
+            try:
+                for step in await self.command_health():
+                    if not step["ok"]:
+                        log.warning("Команды могут не работать — %s: %s", step["name"], step["detail"])
+            except Exception:  # noqa: BLE001
+                log.exception("Не удалось проверить работу slash-команд")
         self.app.bot_error = None
         for g in self.guilds:
             await self._store_guild(g)

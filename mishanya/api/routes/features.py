@@ -336,8 +336,13 @@ async def music_selftest(request: Request, guild_id: int = Depends(guild_id_dep)
     cog = app.bot.get_cog("Music") if app.bot is not None and app.bot.is_ready() else None
     if cog is None:
         steps.append({"name": "Подключение к голосовому каналу", "ok": False, "detail": "бот не подключён к Discord"})
-    elif voice_available():
-        steps.append(await cog.voice_test(guild_id))  # type: ignore[attr-defined]
+    else:
+        if voice_available():
+            steps.append(await cog.voice_test(guild_id))  # type: ignore[attr-defined]
+        try:
+            steps.extend(await app.bot.command_health())  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001
+            steps.append({"name": "Slash-команды", "ok": False, "detail": f"проверка не удалась: {exc}"})
     return {"ok": all(s["ok"] for s in steps), "steps": steps}
 
 

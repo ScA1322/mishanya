@@ -98,7 +98,7 @@ function SelfTest({ guildId }: { guildId: string }) {
     finally { setBusy(false); }
   };
   return (
-    <Card title="Проверка музыки" subtitle="Если музыка не играет — нажмите, и бот проверит всё по шагам и покажет, что именно сломано"
+    <Card title="Проверка музыки и команд" subtitle="Если музыка не играет или бот не отвечает на команды — нажмите, и бот проверит всё по шагам и покажет, что именно сломано"
       actions={<button className="btn btn-primary" disabled={busy} onClick={run}><Icon name="activity" size={15} />{busy ? "Проверяю… (до минуты)" : "Проверить"}</button>}>
       {steps === null ? <div className="small muted">Бот проверит пакеты, FFmpeg, доступ к SoundCloud и ненадолго зайдёт в пустой голосовой канал.</div> : (
         <div className="stack" style={{ gap: 8 }}>
