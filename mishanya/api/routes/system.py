@@ -122,6 +122,24 @@ async def diagnostics(request: Request) -> dict:
     }
 
 
+@router.get("/logs/tail")
+async def logs_tail(request: Request, lines: int = 300) -> dict:
+    """Последние строки data/mishanya.log — чтобы журнал можно было скопировать прямо из панели."""
+    path = get_app(request).settings.data_dir / "mishanya.log"
+    lines = max(20, min(lines, 2000))
+
+    def read() -> list[str]:
+        try:
+            with path.open("rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - lines * 400))
+                return f.read().decode("utf-8", "replace").splitlines()[-lines:]
+        except OSError:
+            return []
+
+    return {"path": str(path), "lines": await asyncio.to_thread(read)}
+
+
 @router.post("/errors/clear")
 async def clear_errors(request: Request) -> dict:
     get_app(request).errors.items.clear()

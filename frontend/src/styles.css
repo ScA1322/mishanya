@@ -623,3 +623,6 @@ td { padding: 12px; }
 .pv-attachments.n3 { grid-template-columns: 1fr 1fr 1fr; }
 .pv-attachments img { width: 100%; border-radius: 6px; object-fit: cover; max-height: 300px; }
 .preview .md-mention { background: rgba(88, 101, 242, 0.3); color: #c9cdfb; border-radius: 3px; padding: 0 2px; font-weight: 500; }
+
+.log-tail { max-height: 460px; overflow: auto; margin: 0; padding: 14px; border-radius: 10px; background: #0b0d10; color: #d6dae2;
+  font-family: ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }

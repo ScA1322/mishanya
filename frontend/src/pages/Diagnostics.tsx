@@ -16,6 +16,29 @@ interface Diag {
 
 const ok = (v: boolean, yes = "да", no = "нет") => <span className={`badge ${v ? "badge-ok" : "badge-err"}`}>{v ? yes : no}</span>;
 
+function LogTail() {
+  const toast = useToast();
+  const { data, error, loading, reload } = useApi<{ path: string; lines: string[] }>("/api/logs/tail?lines=300");
+  const text = data?.lines.join("\n") ?? "";
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); toast("ok", "Журнал скопирован — вставьте его в сообщение"); }
+    catch { toast("err", "Не удалось скопировать — выделите текст вручную"); }
+  };
+  return (
+    <Card title="Журнал бота" subtitle={data ? `Последние ${data.lines.length} строк файла ${data.path}` : "Последние строки журнала"}
+      actions={<>
+        <button className="btn btn-sm" onClick={reload}>Обновить</button>
+        <button className="btn btn-sm btn-primary" disabled={!text} onClick={copy}>Скопировать</button>
+      </>}>
+      {error && <ErrorBox error={error} onRetry={reload} />}
+      {loading && !data ? <Loading /> : !text ? <Empty icon="📄">Журнал пуст</Empty> : (
+        <pre className="log-tail" ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>{text}</pre>
+      )}
+      <div className="small muted mt">Если бот не отвечает на команду: введите её в Discord, нажмите «Обновить» и скопируйте журнал.</div>
+    </Card>
+  );
+}
+
 export default function Diagnostics() {
   const toast = useToast();
   const { data, error, loading, reload } = useApi<Diag>("/api/diagnostics");
@@ -89,6 +112,7 @@ export default function Diagnostics() {
           )}
         </Card>
       </div>
+      <div className="mt"><LogTail /></div>
     </>
   );
 }
