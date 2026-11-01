@@ -95,6 +95,10 @@ def setup_logging(settings: Settings) -> ErrorBuffer:
     # «Shard ID None has successfully RESUMED session» — штатное переподключение к Discord, не ошибка.
     logging.getLogger("discord.gateway").setLevel(logging.WARNING)
     logging.getLogger("discord.voice_state").setLevel(logging.WARNING)
+    # Приём звука (слушание): служебные UDP-пакеты Discord при подключении библиотека считает ошибками — это шум.
+    logging.getLogger("discord.ext.voice_recv").setLevel(logging.WARNING)
+    logging.getLogger("discord.ext.voice_recv.reader").addFilter(
+        lambda r: r.getMessage() not in ("Error unpacking packet", "CryptoError decoding packet data"))
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     return errors
 

@@ -429,6 +429,42 @@ async def chatter_voice_say(body: VoiceSayIn, request: Request, guild_id: int = 
     return {"said": said}
 
 
+# ---------------------------------------------------------------- слушание голоса
+
+@router.get("/listen")
+async def listen_status(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    app = get_app(request)
+    cog = app.bot.get_cog("Listener") if app.bot is not None and app.bot.is_ready() else None
+    if cog is None:
+        s = app.settings
+        return {"available": False, "stt_configured": bool(s.stt_key), "stt_model": s.stt_model,
+                "stt_url": s.stt_url, "listening": False}
+    return cog.status(guild_id)  # type: ignore[attr-defined]
+
+
+class ListenStartIn(BaseModel):
+    channel_id: str = Field(pattern=r"^\d{15,22}$")
+
+
+@router.post("/listen/start")
+async def listen_start(body: ListenStartIn, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    app = get_app(request)
+    cog = _bot_cog(request, "Listener")
+    dg = discord_guild(app, guild_id)
+    channel = dg.get_channel(int(body.channel_id)) if dg else None
+    if not isinstance(channel, discord.VoiceChannel):
+        raise HTTPException(404, "Голосовой канал не найден")
+    await _discord_call(cog.start(channel))
+    return cog.status(guild_id)
+
+
+@router.post("/listen/stop")
+async def listen_stop(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    cog = _bot_cog(request, "Listener")
+    await cog.stop(guild_id, "из панели")
+    return cog.status(guild_id)
+
+
 @router.post("/music-selftest")
 async def music_selftest(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
     steps = await self_test()

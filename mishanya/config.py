@@ -49,7 +49,19 @@ class Settings:
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com"
+    # Распознавание речи (слушание голоса). Пусто — те же ключ и адрес, что для DeepSeek/Inferhold.
+    stt_api_key: str = ""
+    stt_base_url: str = ""
+    stt_model: str = "gpt-4o-transcribe"
     env_path: Path = field(default_factory=lambda: BASE_DIR / ".env")
+
+    @property
+    def stt_key(self) -> str:
+        return self.stt_api_key or self.deepseek_api_key
+
+    @property
+    def stt_url(self) -> str:
+        return self.stt_base_url or self.deepseek_base_url
 
     @property
     def db_path(self) -> Path:
@@ -111,5 +123,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "").strip() or "deepseek-chat",
         deepseek_base_url=(os.getenv("DEEPSEEK_BASE_URL", "").strip() or "https://api.deepseek.com").rstrip("/"),
+        stt_api_key=os.getenv("STT_API_KEY", "").strip(),
+        stt_base_url=os.getenv("STT_BASE_URL", "").strip().rstrip("/"),
+        stt_model=os.getenv("STT_MODEL", "").strip() or "gpt-4o-transcribe",
         env_path=env_path,
     )

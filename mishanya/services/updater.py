@@ -179,10 +179,10 @@ class UpdateService:
                               "потерять изменения. Верните файлы (git checkout -- .) или обновите вручную.")
         if self.db_path.exists():
             create_backup(self.db_path, self.backup_dir, "update")
-        req_before = self._file_hash("requirements.txt")
+        req_before = self._file_hash("requirements.txt"), self._file_hash("requirements-voice.txt")
         old = st.current
         self._git("merge", "--ff-only", "--quiet", "@{u}")
-        if self._file_hash("requirements.txt") != req_before:
+        if (self._file_hash("requirements.txt"), self._file_hash("requirements-voice.txt")) != req_before:
             (self.repo_dir / DEPS_FLAG).write_text("requirements.txt changed\n", encoding="utf-8")
         st.current = self._git("rev-parse", "--short", "HEAD")
         st.behind, st.commits = 0, []

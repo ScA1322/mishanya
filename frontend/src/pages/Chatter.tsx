@@ -13,6 +13,7 @@ interface ChatterConfig {
   voice_enabled: boolean; voice_channels: string[]; voice_interval_minutes: number; voice_max_per_hour: number;
   voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google"; voice_name: "dmitry" | "svetlana";
   voice_rate: number; voice_pitch: number;
+  listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean;
 }
 interface Status { ai_configured: boolean; key_hint: string | null; model: string; last_error: string | null }
 interface TestResult { text: string | null; source: "ai" | "phrase"; error: string | null; context: string | null }
@@ -213,6 +214,87 @@ function VoiceCard({ guildId, d, set }: {
   );
 }
 
+interface ListenStatus {
+  available: boolean; stt_configured: boolean; stt_model: string; stt_url: string; listening: boolean;
+  channel?: string; minutes?: number; error?: string | null;
+  recent?: { time: number; name: string; text: string; addressed: boolean }[];
+}
+
+function ListenCard({ guildId, d, set }: {
+  guildId: string; d: ChatterConfig; set: <K extends keyof ChatterConfig>(k: K, v: ChatterConfig[K]) => void;
+}) {
+  const toast = useToast();
+  const { data, reload, setData } = useApi<ListenStatus>(`/api/guilds/${guildId}/listen`, [guildId]);
+  const [channel, setChannel] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [words, setWords] = useState(d.listen_wake_words.join(", "));
+  useEffect(() => {
+    if (!data?.listening) return;
+    const t = setInterval(reload, 3000);
+    return () => clearInterval(t);
+  }, [data?.listening, reload]);
+
+  const act = async (path: string, body?: unknown) => {
+    setBusy(true);
+    try { setData(await post<ListenStatus>(`/api/guilds/${guildId}/listen/${path}`, body)); }
+    catch (e) { toast("err", errorText(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card title="Слушать голос (эксперимент)" subtitle="Бот сидит в голосовом канале, распознаёт речь и отвечает голосом, когда слышит слово-обращение. Ещё какое-то время после ответа он продолжает разговор без обращения.">
+      {data && !data.available && <div className="alert alert-warn">Приём звука недоступен: бот не подключён или не установлены пакеты. Перезапустите бота через start.bat.</div>}
+      {data && !data.stt_configured && <div className="alert alert-warn">Не задан ключ для распознавания речи — вставьте ключ выше (Inferhold подходит) или задайте STT_API_KEY в .env.</div>}
+      <div className="alert alert-info">
+        Пока бот слушает, <b>каждая фраза в канале</b> отправляется на распознавание ({data?.stt_model ?? "gpt-4o-transcribe"} через {data?.stt_url ?? "…"}) — это платно,
+        и сказанное уходит этому сервису. Через {d.listen_max_minutes} мин бот выходит сам, а если в канале никого нет — через минуту.
+      </div>
+
+      <div className="grid grid-2 mt">
+        <Field label="Слова-обращения" hint="Через запятую. Достаточно части слова: «император» сработает и на «императору»">
+          <input className="input" value={words} onChange={(e) => setWords(e.target.value)}
+            onBlur={() => set("listen_wake_words", words.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean))} />
+        </Field>
+        <Field label="Разговор без обращения после ответа, сек" hint="0 — только по слову-обращению"><NumberInput value={d.listen_followup_seconds} min={0} max={300} onChange={(v) => set("listen_followup_seconds", v)} /></Field>
+        <Field label="Не распознавать фразы короче, сек" hint="Отсекает кашель и «ага» — экономит деньги"><NumberInput value={d.listen_min_seconds} min={0.2} max={5} step={0.1} onChange={(v) => set("listen_min_seconds", v)} /></Field>
+        <Field label="Выйти через, минут"><NumberInput value={d.listen_max_minutes} min={5} max={600} onChange={(v) => set("listen_max_minutes", v)} /></Field>
+      </div>
+      <ToggleRow title="Самому садиться слушать" hint="Если бот не в голосе, он сам зайдёт в канал, где больше всего людей (с учётом списка каналов и минимума людей выше)"
+        checked={d.listen_auto} onChange={(v) => set("listen_auto", v)} />
+
+      <h3 className="mt">Сейчас</h3>
+      {data?.listening ? (
+        <div className="stack" style={{ gap: 10 }}>
+          <div className="row">
+            <span className="badge badge-ok">слушает «{data.channel}»</span>
+            <span className="small muted">{data.minutes} мин</span>
+            <span className="spacer" />
+            <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => act("stop")}>Перестать слушать</button>
+          </div>
+          {data.error && <div className="alert alert-err">Распознавание: {data.error}</div>}
+          {data.recent && data.recent.length > 0 ? (
+            <div className="stack" style={{ gap: 4 }}>
+              {data.recent.map((r, i) => (
+                <div key={i} className="small" style={{ opacity: r.addressed || r.name === "Mishanya" ? 1 : 0.75 }}>
+                  <span className="muted">{new Date(r.time * 1000).toLocaleTimeString("ru-RU")}</span>{" "}
+                  <b>{r.name}:</b> {r.text} {r.addressed && <span className="badge badge-accent">обращение</span>}
+                </div>
+              ))}
+            </div>
+          ) : <div className="small muted">Пока ничего не услышал. Скажите что-нибудь в канале.</div>}
+        </div>
+      ) : (
+        <div className="grid grid-2" style={{ alignItems: "end" }}>
+          <Field label="Зайти и слушать"><VoiceChannelPicker value={channel} onChange={setChannel} /></Field>
+          <div><button className="btn btn-primary" disabled={busy || !channel} onClick={() => act("start", { channel_id: channel })}>
+            <Icon name="mic" size={15} />{busy ? "Захожу…" : "Начать слушать"}</button></div>
+        </div>
+      )}
+      <div className="small muted mt">В Discord: <code>/listen</code> — бот зайдёт в ваш канал и начнёт слушать, ещё раз <code>/listen</code> — выйдет (для админов).</div>
+    </Card>
+  );
+}
+
 export default function Chatter() {
   const { guildId } = useParams();
   const meta = useMeta();
@@ -274,6 +356,8 @@ export default function Chatter() {
         <TestCard guildId={guildId!} cfg={d} onDone={status.reload} />
 
         <VoiceCard guildId={guildId!} d={d} set={set} />
+
+        <ListenCard guildId={guildId!} d={d} set={set} />
 
         <Card title={`Фразы (${d.phrases.length})`} subtitle="Используются без ключа DeepSeek или когда он не отвечает. Одна фраза — одна строка.">
           <textarea className="textarea" rows={10} value={d.phrases.join("\n")}

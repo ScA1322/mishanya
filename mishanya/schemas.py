@@ -418,6 +418,17 @@ class ChatterConfig(Strict):
     voice_name: Literal["dmitry", "svetlana"] = "dmitry"  # голос Microsoft
     voice_rate: int = Field(10, ge=-50, le=100)  # скорость речи, %
     voice_pitch: int = Field(-5, ge=-50, le=50)  # высота голоса, Гц
+    # Слушание: бот сидит в голосовом канале, распознаёт речь и отвечает, когда слышит слово-обращение
+    listen_wake_words: list[str] = Field(default_factory=lambda: ["император"], max_length=20)
+    listen_followup_seconds: int = Field(30, ge=0, le=300)  # после ответа слушает без обращения
+    listen_min_seconds: float = Field(0.6, ge=0.2, le=5)  # короче — не распознаём (кашель, «ага»)
+    listen_max_minutes: int = Field(60, ge=5, le=600)  # потом выходит, чтобы не тратить деньги впустую
+    listen_auto: bool = False  # сам садиться в голосовой канал, где больше всего людей
+
+    @field_validator("listen_wake_words")
+    @classmethod
+    def _wake(cls, v: list[str]) -> list[str]:
+        return [w.strip().lower()[:50] for w in v if w.strip()]
 
     @field_validator("phrases")
     @classmethod

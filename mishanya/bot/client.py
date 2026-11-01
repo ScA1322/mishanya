@@ -38,6 +38,7 @@ COGS = [
     "mishanya.bot.cogs.tempvoice",
     "mishanya.bot.cogs.posts",
     "mishanya.bot.cogs.chatter",
+    "mishanya.bot.cogs.listener",
 ]
 
 # Права, которые запрашиваются в ссылке приглашения и проверяются на странице диагностики.
