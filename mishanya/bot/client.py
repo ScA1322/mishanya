@@ -54,7 +54,22 @@ def build_intents() -> discord.Intents:
     return intents
 
 
+def interaction_lag(interaction: discord.Interaction) -> float:
+    """Сколько секунд прошло с момента вызова команды в Discord (по часам Discord и этого компьютера)."""
+    return (discord.utils.utcnow() - interaction.created_at).total_seconds()
+
+
 class MishanyaTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        name = interaction.command.qualified_name if interaction.command else "?"
+        lag = interaction_lag(interaction)
+        if lag > 2.5:
+            log.warning("Команда /%s от %s пришла с задержкой %.1f с — Discord ждёт ответ только 3 секунды. "
+                        "Проверьте интернет/VPN и что часы Windows синхронизированы.", name, interaction.user, lag)
+        else:
+            log.info("Команда /%s от %s (задержка %.1f с)", name, interaction.user, lag)
+        return True
+
     async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         original = getattr(error, "original", error)
         if isinstance(error, UserFacingError):
@@ -71,6 +86,12 @@ class MishanyaTree(app_commands.CommandTree):
             text = "Команда недоступна."
         elif isinstance(original, UserFacingError):
             text = str(original)
+        elif isinstance(original, discord.NotFound) and original.code == 10062:
+            # Unknown interaction: Discord ждёт ответ не дольше 3 секунд — отвечать уже поздно.
+            log.warning("Команда /%s: не успели ответить Discord за 3 секунды (задержка %.1f с). Обычно это "
+                        "медленная сеть/VPN или перегруженный компьютер.",
+                        interaction.command.qualified_name if interaction.command else "?", interaction_lag(interaction))
+            return
         else:
             text = human_error(original)
             if not isinstance(original, discord.HTTPException):

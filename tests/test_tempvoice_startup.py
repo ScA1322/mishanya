@@ -118,3 +118,31 @@ async def test_update_on_startup(repos, app, monkeypatch):  # noqa: F811
     assert await main_mod.update_on_startup(app) is True
     assert (local / "app.txt").read_text() == "v2\n"
     assert await main_mod.update_on_startup(app) is False  # уже последняя версия
+
+
+# ---------------------------------------------------------------- /play: Discord не дождался ответа
+
+async def test_play_continues_when_defer_too_late(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import discord
+
+    from mishanya.bot.cogs import music as music_mod
+
+    resp = SimpleNamespace(status=404, reason="Not Found")
+    late = discord.NotFound(resp, {"code": 10062, "message": "Unknown interaction"})
+    sent = []
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock(side_effect=late)), channel=object())
+    guild, member = object(), SimpleNamespace(mention="@user")
+    monkeypatch.setattr(music_mod, "require_guild", lambda i: (guild, member))
+    monkeypatch.setattr(music_mod, "safe_send", AsyncMock(side_effect=lambda ch, **kw: sent.append(kw)))
+    cog = music_mod.Music.__new__(music_mod.Music)
+
+    cog._play = AsyncMock()
+    await music_mod.Music.play.callback(cog, interaction, "lofi")
+    cog._play.assert_awaited_once_with(interaction, guild, member, "lofi")
+
+    cog._play = AsyncMock(side_effect=music_mod.UserFacingError("Сначала зайдите в голосовой канал."))
+    await music_mod.Music.play.callback(cog, interaction, "lofi")
+    assert "голосовой канал" in sent[0]["embed"].description

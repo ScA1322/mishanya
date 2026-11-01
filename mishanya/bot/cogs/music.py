@@ -358,7 +358,24 @@ class Music(commands.Cog):
     async def play(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 300]) -> None:
         guild, member = require_guild(interaction)
         # Отвечаем Discord сразу: на ответ даётся 3 секунды, а проверки и поиск могут занять дольше.
-        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.response.defer(thinking=True)
+        except discord.NotFound:
+            # Discord не дождался ответа (медленная сеть/VPN). Музыку всё равно включаем,
+            # а ответы пишем обычными сообщениями в канал.
+            log.warning("/play: Discord не дождался ответа за 3 секунды — отвечаю сообщением в канал")
+            channel = interaction.channel
+            try:
+                await self._play(interaction, guild, member, query)
+            except UserFacingError as exc:
+                if channel is not None:
+                    await safe_send(channel, embed=discord.Embed(description=f"❌ {member.mention}: {exc}",  # type: ignore[arg-type]
+                                                                 color=discord.Color.red()))
+            return
+        await self._play(interaction, guild, member, query)
+
+    async def _play(self, interaction: discord.Interaction, guild: discord.Guild, member: discord.Member,
+                    query: str) -> None:
         cfg = await self._check_enabled(guild)
         if not voice_available():
             raise UserFacingError(VOICE_MISSING)
@@ -390,7 +407,11 @@ class Music(commands.Cog):
                                                         if added < len(tracks) else "")
         if long:
             text += f"\nПропущено длинных треков: {len(long)}"
-        await interaction.followup.send(embed=discord.Embed(description=text, color=COLOR_INFO))
+        embed = discord.Embed(description=text, color=COLOR_INFO)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed)
+        elif interaction.channel is not None:
+            await safe_send(interaction.channel, embed=embed)  # type: ignore[arg-type]
         if idle:
             await self._play_next(guild.id)
 
