@@ -123,4 +123,5 @@ class App:
         self.tempvoice = TempVoiceService(self.db)
         self.menus = MenuService(self.db, self.settings.data_dir / "menus")
         self.posts = PostService(self.db, self.settings.data_dir / "posts")
+        self.chatter_error: str | None = None  # последняя ошибка DeepSeek (для панели)
         self.updater = UpdateService(self.settings.base_dir, self.settings.db_path, self.settings.backup_dir)

@@ -46,6 +46,10 @@ class Settings:
     base_dir: Path = BASE_DIR
     log_level: str = "INFO"
     session_hours: int = 72
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    env_path: Path = field(default_factory=lambda: BASE_DIR / ".env")
 
     @property
     def db_path(self) -> Path:
@@ -104,4 +108,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         backup_dir=backup_dir,
         log_level=(os.getenv("LOG_LEVEL", "INFO").strip() or "INFO").upper(),
         session_hours=_int("SESSION_HOURS", os.getenv("SESSION_HOURS"), 72),
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
+        deepseek_model=os.getenv("DEEPSEEK_MODEL", "").strip() or "deepseek-chat",
+        deepseek_base_url=(os.getenv("DEEPSEEK_BASE_URL", "").strip() or "https://api.deepseek.com").rstrip("/"),
+        env_path=env_path,
     )

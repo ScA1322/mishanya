@@ -37,6 +37,7 @@ COGS = [
     "mishanya.bot.cogs.music",
     "mishanya.bot.cogs.tempvoice",
     "mishanya.bot.cogs.posts",
+    "mishanya.bot.cogs.chatter",
 ]
 
 # Права, которые запрашиваются в ссылке приглашения и проверяются на странице диагностики.
@@ -255,7 +256,7 @@ class MishanyaBot(commands.Bot):
                     return
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка автомодерации")
-        for cog_name in ("CustomCommands", "Leveling"):
+        for cog_name in ("CustomCommands", "Leveling", "Chatter"):
             cog = self.get_cog(cog_name)
             if cog is None:
                 continue

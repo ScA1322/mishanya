@@ -16,6 +16,7 @@ export const MODULE_LABELS: Record<ModuleName, string> = {
   tickets: "Тикеты",
   music: "Музыка",
   tempvoice: "Голосовые комнаты",
+  chatter: "Болтовня",
 };
 
 export default function Servers() {

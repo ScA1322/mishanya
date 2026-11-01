@@ -9,7 +9,8 @@ export type ModuleName =
   | "utility"
   | "tickets"
   | "music"
-  | "tempvoice";
+  | "tempvoice"
+  | "chatter";
 
 export interface GuildSummary {
   id: string;

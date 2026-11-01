@@ -20,6 +20,7 @@ import Commands from "./pages/Commands";
 import Logs from "./pages/Logs";
 import Menus from "./pages/Menus";
 import Posts from "./pages/Posts";
+import Chatter from "./pages/Chatter";
 import Tickets from "./pages/Tickets";
 import Music from "./pages/Music";
 import TempVoice from "./pages/TempVoice";
@@ -56,6 +57,7 @@ const GUILD_NAV: [string, IconName, string][] = [
   ["tickets", "ticket", "Тикеты"],
   ["music", "music", "Музыка"],
   ["voice", "mic", "Голосовые комнаты"],
+  ["chatter", "zap", "Болтовня (ИИ)"],
   ["logs", "file", "Журналы"],
 ];
 
@@ -181,6 +183,7 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
             <Route path="commands" element={<Commands />} />
             <Route path="logs" element={<Logs />} />
             <Route path="posts" element={<Posts />} />
+            <Route path="chatter" element={<Chatter />} />
             <Route path="menus" element={<Menus />} />
             <Route path="tickets" element={<Tickets />} />
             <Route path="music" element={<Music />} />

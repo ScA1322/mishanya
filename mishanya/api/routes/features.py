@@ -11,8 +11,9 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from ...bot.utils import UserFacingError, human_error
-from ...schemas import CardConfig, MenuConfig, PostConfig, TempVoiceConfig, TicketsConfig, VoiceHub, WelcomeConfig
+from ...schemas import CardConfig, ChatterConfig, MenuConfig, PostConfig, TempVoiceConfig, TicketsConfig, VoiceHub, WelcomeConfig
 from ...services.cards import background_path, render_card, save_background
+from ...services.chatter import ChatterError, format_history, generate, pick_phrase
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
 from ...services.music import self_test, voice_available
 from ...services.posts import PostLimit
@@ -327,6 +328,62 @@ async def music_state(request: Request, guild_id: int = Depends(guild_id_dep)) -
                 "elapsed": 0, "queue": [], "loop": "off", "volume": None, "bot": False,
                 "voice_available": voice_available()}
     return {**cog.state(guild_id), "bot": True}  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------- болтовня
+
+SAMPLE_CHAT = [("Вася", "кто сегодня в доту?", False), ("Петя", "я после 9, у меня созвон", False),
+               ("Вася", "опять созвон, ты там президентом работаешь?", False), ("Петя", "почти", False)]
+
+
+def _chatter_status(app) -> dict:  # noqa: ANN001
+    key = app.settings.deepseek_api_key
+    return {"ai_configured": bool(key), "key_hint": f"…{key[-4:]}" if len(key) >= 8 else None,
+            "model": app.settings.deepseek_model, "last_error": app.chatter_error}
+
+
+@router.get("/chatter/status")
+async def chatter_status(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:  # noqa: ARG001
+    return _chatter_status(get_app(request))
+
+
+class ChatterTestIn(BaseModel):
+    config: dict
+    channel_id: str | None = Field(None, pattern=r"^\d{15,22}$")
+    mentioned: bool = False
+
+
+@router.post("/chatter/test")
+async def chatter_test(body: ChatterTestIn, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Придумывает реплику по текущим (даже несохранённым) настройкам. В Discord ничего не отправляет."""
+    app = get_app(request)
+    try:
+        cfg = ChatterConfig.model_validate(body.config)
+    except ValidationError as exc:
+        raise HTTPException(422, validation_detail(exc)) from None
+    s = app.settings
+    if not (cfg.use_ai and s.deepseek_api_key):
+        phrase = pick_phrase(cfg.phrases)
+        return {"text": phrase, "source": "phrase", "error": None if phrase else "Список фраз пуст",
+                "context": None}
+    dg = discord_guild(app, guild_id)
+    channel = dg.get_channel(int(body.channel_id)) if dg and body.channel_id else None
+    history, channel_name, me = SAMPLE_CHAT, "общий", "Мишаня"
+    if isinstance(channel, (discord.TextChannel, discord.Thread)) and channel.permissions_for(channel.guild.me).read_message_history:
+        me = channel.guild.me.display_name
+        history = [(m.author.display_name, m.clean_content, m.author.id == channel.guild.me.id)
+                   async for m in channel.history(limit=cfg.context_messages)][::-1]
+        channel_name = channel.name
+    context = format_history(history, me)
+    try:
+        text = await generate(api_key=s.deepseek_api_key, base_url=s.deepseek_base_url, model=s.deepseek_model,
+                              system_prompt=cfg.system_prompt, history=context, channel=channel_name, bot_name=me,
+                              mentioned=body.mentioned, temperature=cfg.temperature, max_tokens=cfg.max_tokens)
+    except ChatterError as exc:
+        app.chatter_error = str(exc)
+        return {"text": None, "source": "ai", "error": str(exc), "context": context}
+    app.chatter_error = None
+    return {"text": text, "source": "ai", "error": None, "context": context}
 
 
 @router.post("/music-selftest")

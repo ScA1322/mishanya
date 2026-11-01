@@ -374,6 +374,47 @@ class UtilityConfig(Strict):
     polls_enabled: bool = True
 
 
+# ---------------------------------------------------------------- Болтовня (бот сам вмешивается в чат)
+
+DEFAULT_CHATTER_PROMPT = (
+    "Ты — Мишаня, свой пацан в Discord-чате друзей. Иногда ты сам влезаешь в разговор.\n"
+    "Пиши как живой участник чата: одно короткое сообщение (1–2 предложения, до 200 символов), по-русски, "
+    "разговорно, с юмором, абсурдом и подколами по теме последних сообщений. Можно сленг и мат.\n"
+    "Не говори, что ты ИИ или бот. Не здоровайся, не ставь кавычки и подписи, не пиши своё имя в начале.\n"
+    "Без оскорблений по национальности, религии, ориентации и т. п., без угроз, не упоминай @everyone и @here."
+)
+DEFAULT_CHATTER_PHRASES = [
+    "а я говорил", "ну это база", "кто-нибудь видел мои носки?", "так, я ничего не понял, но очень интересно",
+    "согласен с предыдущим оратором, кем бы он ни был", "это всё масоны", "пацаны, а вы знали, что огурец на 95% вода?",
+    "ору", "звучит как план", "я бы на вашем месте не стал", "ладно, я пошёл", "мда",
+    "а можно то же самое, но с пельменями?", "вот из-за таких разговоров у меня и нет девушки", "лол",
+]
+
+
+class ChatterConfig(Strict):
+    enabled: bool = False
+    channels: list[Snowflake] = Field(default_factory=list, max_length=50)  # пусто — все текстовые каналы
+    chance_percent: float = Field(3.0, ge=0.1, le=100)  # шанс вмешаться после каждого сообщения
+    min_messages: int = Field(8, ge=1, le=500)  # не раньше, чем через столько сообщений после прошлого раза
+    cooldown_minutes: int = Field(15, ge=0, le=1440)  # пауза между вмешательствами в одном канале
+    max_per_hour: int = Field(6, ge=1, le=60)  # на весь сервер
+    reply_on_mention: bool = True  # отвечать, если бота упомянули или ответили на его сообщение
+    reply_to_message: bool = False  # вмешиваясь, отвечать «ответом» на последнее сообщение
+    use_ai: bool = True
+    system_prompt: str = Field(DEFAULT_CHATTER_PROMPT, max_length=4000)
+    context_messages: int = Field(15, ge=1, le=50)
+    temperature: float = Field(1.3, ge=0, le=2)
+    max_tokens: int = Field(150, ge=16, le=1000)
+    phrases: list[str] = Field(default_factory=lambda: list(DEFAULT_CHATTER_PHRASES), max_length=200)
+    fallback_to_phrases: bool = True  # если DeepSeek недоступен — писать фразу из списка
+
+    @field_validator("phrases")
+    @classmethod
+    def _phrases(cls, v: list[str]) -> list[str]:
+        out = [p.strip()[:500] for p in v if p.strip()]
+        return out
+
+
 MODULES: dict[str, type[Strict]] = {
     "leveling": LevelingConfig,
     "moderation": ModerationConfig,
@@ -386,6 +427,7 @@ MODULES: dict[str, type[Strict]] = {
     "tickets": TicketsConfig,
     "music": MusicConfig,
     "tempvoice": TempVoiceConfig,
+    "chatter": ChatterConfig,
 }
 
 

@@ -16,6 +16,7 @@ from ...db.backup import BackupError, create_backup, list_backups, resolve_backu
 from ...db.database import check_integrity
 from ...schemas import LOG_EVENTS, MODULES, EmbedConfig, GlobalSettings
 from ...services.automod import RULE_NAMES
+from ...services.chatter import set_env_value
 from ...services.updater import UpdateError
 from ...services.templates import SAMPLE_VALUES, TEMPLATE_VARIABLES, member_values, render
 from ..auth import require_auth
@@ -120,6 +121,27 @@ async def diagnostics(request: Request) -> dict:
         "errors": [{"time": iso(e.time), "level": e.level, "source": e.source, "message": e.message}
                    for e in reversed(app.errors.items)],
     }
+
+
+class AiKeyIn(BaseModel):
+    # Только безопасные символы: значение пишется в .env, перевод строки сломал бы файл.
+    key: str = Field("", max_length=200, pattern=r"^[A-Za-z0-9_\-.]*$")
+
+
+@router.put("/ai/key")
+async def set_ai_key(body: AiKeyIn, request: Request) -> dict:
+    """Сохраняет ключ DeepSeek в .env и сразу применяет его. Сам ключ панели не возвращается."""
+    app = get_app(request)
+    key = body.key.strip()
+    if key and len(key) < 10:
+        raise HTTPException(422, "Ключ слишком короткий — скопируйте его целиком (начинается с sk-)")
+    try:
+        await asyncio.to_thread(set_env_value, app.settings.env_path, "DEEPSEEK_API_KEY", key)
+    except OSError as exc:
+        raise HTTPException(500, f"Не удалось записать .env: {exc}") from None
+    app.settings.deepseek_api_key = key
+    app.chatter_error = None
+    return {"ai_configured": bool(key), "key_hint": f"…{key[-4:]}" if key else None}
 
 
 @router.get("/logs/tail")

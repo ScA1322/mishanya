@@ -25,7 +25,7 @@ def anyio_backend() -> str:
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(panel_password=PASSWORD, data_dir=tmp_path / "data", backup_dir=tmp_path / "backups",
-                    frontend_dist=tmp_path / "dist", open_browser=False)
+                    frontend_dist=tmp_path / "dist", open_browser=False, env_path=tmp_path / ".env")
 
 
 @pytest.fixture

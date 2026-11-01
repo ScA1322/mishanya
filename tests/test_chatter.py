@@ -1,0 +1,104 @@
+"""Болтовня: клиент DeepSeek (на локальном фейковом сервере), очистка ответов, API панели и ключ в .env."""
+from __future__ import annotations
+
+import pytest
+from aiohttp import web
+
+from mishanya.services.chatter import ChatterError, clean_reply, format_history, generate, set_env_value
+
+pytestmark = pytest.mark.anyio
+GID = "111111111111111111"
+
+
+@pytest.fixture
+async def fake_deepseek():
+    """Локальный сервер с тем же API, что у DeepSeek. Поведение задаётся через state."""
+    state = {"status": 200, "reply": "Мишаня: «ну это база»", "seen": []}
+
+    async def handler(request: web.Request) -> web.Response:
+        state["seen"].append({"auth": request.headers.get("Authorization"), "body": await request.json()})
+        if state["status"] != 200:
+            return web.Response(status=state["status"], text="nope")
+        return web.json_response({"choices": [{"message": {"role": "assistant", "content": state["reply"]}}]})
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # noqa: SLF001
+    state["url"] = f"http://127.0.0.1:{port}"
+    yield state
+    await runner.cleanup()
+
+
+async def test_generate_against_fake_api(fake_deepseek):
+    kw = dict(api_key="sk-test", base_url=fake_deepseek["url"], model="deepseek-chat", system_prompt="Ты Мишаня",
+              history="Вася: привет", channel="общий", bot_name="Мишаня", mentioned=False, temperature=1.3,
+              max_tokens=100)
+    assert await generate(**kw) == "ну это база"  # имя и кавычки убраны
+    req = fake_deepseek["seen"][0]
+    assert req["auth"] == "Bearer sk-test" and req["body"]["model"] == "deepseek-chat"
+    assert req["body"]["messages"][0] == {"role": "system", "content": "Ты Мишаня"}
+    assert "Вася: привет" in req["body"]["messages"][1]["content"]
+    for status, text in ((401, "ключ"), (402, "баланс"), (429, "подождать"), (500, "500")):
+        fake_deepseek["status"] = status
+        with pytest.raises(ChatterError, match=text):
+            await generate(**kw)
+    with pytest.raises(ChatterError, match="не задан"):
+        await generate(**{**kw, "api_key": ""})
+
+
+def test_clean_and_history():
+    assert clean_reply("  Mishanya: пинг @everyone  ", "Мишаня") == "пинг everyone"
+    assert clean_reply('"ору"', "Бот") == "ору"
+    hist = format_history([("Вася", "  много   пробелов ", False), ("x", "", False), ("Бот", "я тут", True)], "Мишаня")
+    assert hist == "Вася: много пробелов\nМишаня: я тут"
+
+
+def test_set_env_value(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("DISCORD_TOKEN=abc\n# DEEPSEEK_API_KEY=\nX=1\n", encoding="utf-8")
+    set_env_value(env, "DEEPSEEK_API_KEY", "sk-123")
+    assert env.read_text(encoding="utf-8") == "DISCORD_TOKEN=abc\nDEEPSEEK_API_KEY=sk-123\nX=1\n"
+    set_env_value(env, "NEW", "v")
+    assert env.read_text(encoding="utf-8").endswith("NEW=v\n")
+
+
+async def test_chatter_api(authed, app, fake_deepseek):
+    cfg = (await authed.get(f"/api/guilds/{GID}/config/chatter")).json()
+    assert cfg["enabled"] is False and cfg["phrases"]
+    status = (await authed.get(f"/api/guilds/{GID}/chatter/status")).json()
+    assert status["ai_configured"] is False
+
+    r = (await authed.post(f"/api/guilds/{GID}/chatter/test", json={"config": cfg})).json()
+    assert r["source"] == "phrase" and r["text"] in cfg["phrases"]
+
+    assert (await authed.put("/api/ai/key", json={"key": "sk-bad\nINJECT=1"})).status_code == 422
+    r = await authed.put("/api/ai/key", json={"key": "sk-abcdef123456"})
+    assert r.status_code == 200 and r.json()["key_hint"] == "…3456"
+    assert "DEEPSEEK_API_KEY=sk-abcdef123456" in app.settings.env_path.read_text(encoding="utf-8")
+    assert "sk-abcdef" not in (await authed.get(f"/api/guilds/{GID}/chatter/status")).text  # ключ не отдаётся
+
+    app.settings.deepseek_base_url = fake_deepseek["url"]
+    fake_deepseek["reply"] = "кто-нибудь видел мою дотку?"
+    r = (await authed.post(f"/api/guilds/{GID}/chatter/test", json={"config": cfg})).json()
+    assert r == {"text": "кто-нибудь видел мою дотку?", "source": "ai", "error": None, "context": r["context"]}
+    assert "Вася: кто сегодня в доту?" in r["context"]
+    fake_deepseek["status"] = 402
+    r = (await authed.post(f"/api/guilds/{GID}/chatter/test", json={"config": cfg})).json()
+    assert r["text"] is None and "баланс" in r["error"]
+    assert "баланс" in (await authed.get(f"/api/guilds/{GID}/chatter/status")).json()["last_error"]
+
+    assert (await authed.put("/api/ai/key", json={"key": ""})).json()["ai_configured"] is False
+
+
+def test_hourly_limit():
+    from mishanya.bot.cogs.chatter import Chatter
+
+    c = Chatter.__new__(Chatter)
+    c.hourly = {}
+    assert all(c._take_hourly(1, 3, 100.0 + i) for i in range(3))
+    assert not c._take_hourly(1, 3, 200.0)
+    assert c._take_hourly(1, 3, 100.0 + 3601)  # старые вышли из окна часа
