@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { errorText, post } from "../api";
 import { useApi, useModuleConfig, useUnsavedWarning } from "../hooks";
@@ -84,6 +84,36 @@ function Player({ guildId }: { guildId: string }) {
   );
 }
 
+interface Step { name: string; ok: boolean; detail: string }
+
+function SelfTest({ guildId }: { guildId: string }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setSteps(null);
+    try { setSteps((await post<{ ok: boolean; steps: Step[] }>(`/api/guilds/${guildId}/music-selftest`)).steps); }
+    catch (e) { toast("err", errorText(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Card title="Проверка музыки" subtitle="Если музыка не играет — нажмите, и бот проверит всё по шагам и покажет, что именно сломано"
+      actions={<button className="btn btn-primary" disabled={busy} onClick={run}><Icon name="activity" size={15} />{busy ? "Проверяю… (до минуты)" : "Проверить"}</button>}>
+      {steps === null ? <div className="small muted">Бот проверит пакеты, FFmpeg, доступ к SoundCloud и ненадолго зайдёт в пустой голосовой канал.</div> : (
+        <div className="stack" style={{ gap: 8 }}>
+          {steps.map((s) => (
+            <div key={s.name} className={`alert ${s.ok ? "alert-ok" : "alert-err"}`}>
+              <strong>{s.ok ? "✓" : "✗"} {s.name}</strong> — {s.detail}
+            </div>
+          ))}
+          {steps.every((s) => s.ok) && <div className="small muted">Всё в порядке. Зайдите в голосовой канал и напишите <code>/play название</code>.</div>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function Music() {
   const { guildId } = useParams();
   const c = useModuleConfig<MusicConfig>(guildId!, "music");
@@ -96,6 +126,7 @@ export default function Music() {
       <PageHeader title="Музыка" subtitle="Треки и плейлисты с SoundCloud в голосовых каналах: /play, /skip, /queue, /loop, /volume и другие." />
       <div className="stack">
         <Player guildId={guildId!} />
+        <SelfTest guildId={guildId!} />
         <Card title="Настройки">
           <ToggleRow title="Музыка включена" checked={d.enabled} onChange={(v) => c.update((x) => { x.enabled = v; })} />
           <div className="grid grid-2 mt">

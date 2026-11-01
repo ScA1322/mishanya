@@ -11,10 +11,11 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from ...bot.utils import UserFacingError, human_error
-from ...schemas import CardConfig, MenuConfig, TempVoiceConfig, TicketsConfig, VoiceHub, WelcomeConfig
+from ...schemas import CardConfig, MenuConfig, PostConfig, TempVoiceConfig, TicketsConfig, VoiceHub, WelcomeConfig
 from ...services.cards import background_path, render_card, save_background
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
-from ...services.music import voice_available
+from ...services.music import self_test, voice_available
+from ...services.posts import PostLimit
 from ...services.templates import SAMPLE_VALUES, member_values
 from ..auth import require_auth
 from ..deps import discord_guild, get_app, guild_id_dep, iso, user_label
@@ -204,6 +205,117 @@ async def get_image(menu_id: int, request: Request, guild_id: int = Depends(guil
     return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
 
 
+def _decode_image(body: ImageIn) -> bytes:
+    raw = body.data.split(",", 1)[1] if body.data.startswith("data:") else body.data
+    try:
+        return base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(422, "Файл изображения повреждён") from None
+
+
+# ---------------------------------------------------------------- посты
+
+def _post_out(guild_id: int, p) -> dict:  # noqa: ANN001
+    jump = None
+    if p.message_id and p.published_channel_id:
+        jump = f"https://discord.com/channels/{guild_id}/{p.published_channel_id}/{p.message_id}"
+    return {
+        "id": p.id, "name": p.name, "channel_id": str(p.channel_id) if p.channel_id else None,
+        "content": (p.data or {}).get("content", ""), "embeds": (p.data or {}).get("embeds", []),
+        "attachments": (p.data or {}).get("attachments", []), "ping": (p.data or {}).get("ping", False),
+        "published": bool(p.message_id), "message_url": jump,
+        "published_channel_id": str(p.published_channel_id) if p.published_channel_id else None,
+        "published_at": iso(p.published_at), "updated_at": iso(p.updated_at),
+    }
+
+
+def _parse_post(body: dict) -> PostConfig:
+    try:
+        return PostConfig.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(422, validation_detail(exc)) from None
+
+
+async def _get_post(request: Request, guild_id: int, post_id: int):  # noqa: ANN202
+    p = await get_app(request).posts.get(guild_id, post_id)
+    if p is None:
+        raise HTTPException(404, "Пост не найден")
+    return p
+
+
+@router.get("/posts")
+async def list_posts(request: Request, guild_id: int = Depends(guild_id_dep)) -> list[dict]:
+    return [_post_out(guild_id, p) for p in await get_app(request).posts.list(guild_id)]
+
+
+@router.post("/posts")
+async def create_post(body: dict, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    data = _parse_post(body)
+    try:
+        p = await get_app(request).posts.create(guild_id, data)
+    except ValueError as exc:  # PostLimit или пропавший файл
+        raise HTTPException(409 if isinstance(exc, PostLimit) else 422, str(exc)) from None
+    return _post_out(guild_id, p)
+
+
+@router.put("/posts/{post_id}")
+async def update_post(post_id: int, body: dict, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    data = _parse_post(body)
+    try:
+        p = await get_app(request).posts.update(guild_id, post_id, data)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if p is None:
+        raise HTTPException(404, "Пост не найден")
+    return _post_out(guild_id, p)
+
+
+@router.delete("/posts/{post_id}")
+async def delete_post(post_id: int, request: Request, guild_id: int = Depends(guild_id_dep),
+                      remove_message: bool = True) -> dict:
+    app = get_app(request)
+    p = await _get_post(request, guild_id, post_id)
+    if remove_message and p.message_id and app.bot is not None and app.bot.is_ready():
+        cog = app.bot.get_cog("Posts")
+        if cog is not None:
+            await cog.unpublish(p)  # type: ignore[attr-defined]
+    await app.posts.delete(guild_id, post_id)
+    return {"ok": True}
+
+
+@router.post("/posts/{post_id}/publish")
+async def publish_post(post_id: int, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    p = await _get_post(request, guild_id, post_id)
+    cog = _bot_cog(request, "Posts")
+    await _discord_call(cog.publish(p))
+    return _post_out(guild_id, await _get_post(request, guild_id, post_id))
+
+
+@router.post("/posts/{post_id}/unpublish")
+async def unpublish_post(post_id: int, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    p = await _get_post(request, guild_id, post_id)
+    cog = _bot_cog(request, "Posts")
+    await _discord_call(cog.unpublish(p))
+    return _post_out(guild_id, await _get_post(request, guild_id, post_id))
+
+
+@router.post("/posts/files")
+async def upload_post_file(body: ImageIn, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    try:
+        name = get_app(request).posts.save_upload(guild_id, _decode_image(body))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ref": f"upload:{name}", "url": f"/api/guilds/{guild_id}/posts/files/{name}"}
+
+
+@router.get("/posts/files/{name}")
+async def get_post_file(name: str, request: Request, guild_id: int = Depends(guild_id_dep)) -> FileResponse:
+    path = get_app(request).posts.file_path(guild_id, name)
+    if path is None:
+        raise HTTPException(404, "Изображение не найдено")
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=604800, immutable"})
+
+
 # ---------------------------------------------------------------- музыка
 
 @router.get("/music")
@@ -215,6 +327,18 @@ async def music_state(request: Request, guild_id: int = Depends(guild_id_dep)) -
                 "elapsed": 0, "queue": [], "loop": "off", "volume": None, "bot": False,
                 "voice_available": voice_available()}
     return {**cog.state(guild_id), "bot": True}  # type: ignore[attr-defined]
+
+
+@router.post("/music-selftest")
+async def music_selftest(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    steps = await self_test()
+    app = get_app(request)
+    cog = app.bot.get_cog("Music") if app.bot is not None and app.bot.is_ready() else None
+    if cog is None:
+        steps.append({"name": "Подключение к голосовому каналу", "ok": False, "detail": "бот не подключён к Discord"})
+    elif voice_available():
+        steps.append(await cog.voice_test(guild_id))  # type: ignore[attr-defined]
+    return {"ok": all(s["ok"] for s in steps), "steps": steps}
 
 
 @router.post("/music/{action}")

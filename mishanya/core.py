@@ -19,6 +19,7 @@ from .services.eventlog import EventLogService
 from .services.guilds import GuildService
 from .services.leveling import LevelingService
 from .services.menus import MenuService
+from .services.posts import PostService
 from .services.moderation import ModerationService
 from .services.reminders import ReminderService
 from .services.tempvoice import TempVoiceService
@@ -121,4 +122,5 @@ class App:
         self.tickets = TicketService(self.db)
         self.tempvoice = TempVoiceService(self.db)
         self.menus = MenuService(self.db, self.settings.data_dir / "menus")
+        self.posts = PostService(self.db, self.settings.data_dir / "posts")
         self.updater = UpdateService(self.settings.base_dir, self.settings.db_path, self.settings.backup_dir)

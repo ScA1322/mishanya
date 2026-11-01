@@ -245,6 +245,22 @@ class ButtonMenu(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class Post(Base):
+    """Оформленное сообщение (текст, до 10 embed, картинки-вложения), которое бот публикует в выбранный канал."""
+
+    __tablename__ = "posts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)  # PostConfig без name/channel_id
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class TempVoiceChannel(Base):
     """Голосовая комната, созданная через канал-создатель; удаляется, когда в ней никого не осталось."""
 

@@ -159,10 +159,12 @@ class Music(commands.Cog):
                     return
                 try:
                     stream_url, _headers = await resolve_stream(track)
-                    source = discord.PCMVolumeTransformer(
-                        discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_executable(),
-                                               before_options=FFMPEG_BEFORE, options="-vn"),
-                        volume=player.queue.volume / 100)
+                    # Запуск FFmpeg — в отдельном потоке: на Windows антивирус может проверять ffmpeg.exe
+                    # несколько секунд, и бот всё это время не отвечал бы ни на одну команду.
+                    audio = await asyncio.to_thread(
+                        lambda: discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_executable(),
+                                                       before_options=FFMPEG_BEFORE, options="-vn"))
+                    source = discord.PCMVolumeTransformer(audio, volume=player.queue.volume / 100)
                 except MusicError as exc:
                     await self._notify(guild, player, f"⚠️ Пропускаю «{track.title}»: {exc}")
                     player.queue.current = None
@@ -322,6 +324,32 @@ class Music(commands.Cog):
         else:
             raise UserFacingError("Неизвестное действие.")
 
+    async def voice_test(self, guild_id: int) -> dict:
+        """Ненадолго заходит в пустой голосовой канал, чтобы проверить соединение с голосовыми серверами Discord."""
+        name = "Подключение к голосовому каналу"
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return {"name": name, "ok": False, "detail": "бот не подключён к серверу"}
+        if self._voice(guild) is not None:
+            return {"name": name, "ok": True, "detail": "бот уже в голосовом канале — соединение работает"}
+        channels = [c for c in guild.voice_channels
+                    if c.permissions_for(guild.me).connect and c.permissions_for(guild.me).speak]
+        if not channels:
+            return {"name": name, "ok": False, "detail": "у бота нет права подключаться ни к одному голосовому каналу"}
+        channel = next((c for c in channels if not c.members), channels[0])
+        try:
+            vc = await channel.connect(timeout=15, self_deaf=True)
+        except asyncio.TimeoutError:
+            return {"name": name, "ok": False, "detail": (
+                f"#{channel.name}: голосовой сервер Discord не ответил за 15 секунд. Обычно это значит, что "
+                "UDP-трафик голоса блокируется (провайдер, брандмауэр или антивирус). Включите VPN, который "
+                "пропускает UDP (не только браузерный), или разрешите Python в брандмауэре Windows.")}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Проверка голоса на сервере %s", guild_id)
+            return {"name": name, "ok": False, "detail": f"#{channel.name}: {exc}"}
+        await vc.disconnect(force=True)
+        return {"name": name, "ok": True, "detail": f"успешно зашёл в #{channel.name} и вышел"}
+
     # ------------------------------------------------------------ slash-команды
 
     @app_commands.command(name="play", description="Включить трек или плейлист с SoundCloud")
@@ -329,12 +357,13 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def play(self, interaction: discord.Interaction, query: app_commands.Range[str, 1, 300]) -> None:
         guild, member = require_guild(interaction)
+        # Отвечаем Discord сразу: на ответ даётся 3 секунды, а проверки и поиск могут занять дольше.
+        await interaction.response.defer(thinking=True)
         cfg = await self._check_enabled(guild)
         if not voice_available():
             raise UserFacingError(VOICE_MISSING)
         if member.voice is None or member.voice.channel is None:
             raise UserFacingError("Сначала зайдите в голосовой канал.")
-        await interaction.response.defer(thinking=True)
         try:
             tracks = await search(query, member.id)
         except MusicError as exc:

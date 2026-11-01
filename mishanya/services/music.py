@@ -154,6 +154,65 @@ async def resolve_stream(track: Track) -> tuple[str, dict]:
     return url, info.get("http_headers") or {}
 
 
+async def self_test() -> list[dict]:
+    """Проверяет всё, что нужно для музыки, кроме самого голосового канала: каждый шаг — ok и пояснение."""
+    import subprocess
+    import sys
+
+    steps: list[dict] = []
+
+    def add(name: str, ok: bool, detail: str) -> bool:
+        steps.append({"name": name, "ok": ok, "detail": detail})
+        return ok
+
+    add("Python", True, sys.version.split()[0])
+    missing = []
+    for mod, pkg in (("nacl", "PyNaCl"), ("davey", "davey")):
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
+    add("Пакеты голоса", not missing, "установлены" if not missing else
+        f"не установлены: {', '.join(missing)}. Запустите setup.bat (нужен Python 3.12–3.14).")
+    try:
+        import discord.opus
+
+        if not discord.opus.is_loaded():
+            discord.opus._load_default()  # noqa: SLF001
+        add("Кодек Opus", discord.opus.is_loaded(), "загружен" if discord.opus.is_loaded() else "не загрузился")
+    except Exception as exc:  # noqa: BLE001
+        add("Кодек Opus", False, str(exc))
+    try:
+        exe = ffmpeg_executable()
+        add("FFmpeg", True, exe)
+    except MusicError as exc:
+        add("FFmpeg", False, str(exc))
+        return steps
+    try:
+        tracks = await search("lofi", 0)
+        add("Поиск SoundCloud", True, f"найдено: {tracks[0].title}")
+        url, _ = await resolve_stream(tracks[0])
+        add("Ссылка на поток", True, "получена")
+    except MusicError as exc:
+        add("SoundCloud", False, f"{exc} Возможно, SoundCloud недоступен из вашей сети — попробуйте VPN.")
+        return steps
+
+    def decode() -> int:
+        kwargs: dict = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+        res = subprocess.run([exe, *FFMPEG_BEFORE.split(), "-i", url, "-t", "2", "-f", "s16le", "-ar", "48000",
+                              "-ac", "2", "-loglevel", "error", "pipe:1"], capture_output=True, timeout=40,
+                             stdin=subprocess.DEVNULL, **kwargs)
+        return len(res.stdout)
+
+    try:
+        size = await asyncio.to_thread(decode)
+        add("Декодирование звука", size > 100_000, f"получено {size // 1024} КБ звука за 2 секунды"
+            if size > 100_000 else "FFmpeg не смог прочитать поток SoundCloud")
+    except Exception as exc:  # noqa: BLE001
+        add("Декодирование звука", False, str(exc))
+    return steps
+
+
 @dataclass
 class MusicQueue:
     tracks: deque[Track] = field(default_factory=deque)

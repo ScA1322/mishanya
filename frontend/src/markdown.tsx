@@ -1,5 +1,17 @@
 // Упрощённый рендер Markdown Discord для предпросмотра. Строит React-элементы — без innerHTML.
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
+
+/** Подставляет имена ролей и каналов вместо <@&id> / <#id> (если предпросмотр знает ресурсы сервера). */
+export type MentionResolver = (raw: string) => { label: string; color?: string | null } | null;
+export const MentionCtx = createContext<MentionResolver | null>(null);
+
+function Mention({ raw }: { raw: string }) {
+  const resolve = useContext(MentionCtx);
+  const r = resolve?.(raw);
+  if (!r) return <span className="md-mention">{raw}</span>;
+  const style = r.color ? { color: r.color, background: `${r.color}26` } : undefined;
+  return <span className="md-mention" style={style}>{r.label}</span>;
+}
 
 type Rule = { re: RegExp; render: (m: RegExpExecArray, key: string) => ReactNode };
 
@@ -10,7 +22,10 @@ const RULES: Rule[] = [
   { re: /~~([\s\S]+?)~~/, render: (m, k) => <s key={k}>{inline(m[1], k)}</s> },
   { re: /\|\|([\s\S]+?)\|\|/, render: (m, k) => <span key={k} className="md-spoiler" title="Спойлер">{inline(m[1], k)}</span> },
   { re: /\*([^*\n]+?)\*|(?<![\w])_([^_\n]+?)_(?![\w])/, render: (m, k) => <em key={k}>{inline(m[1] ?? m[2], k)}</em> },
-  { re: /<@[!&]?\d+>|<#\d+>|@everyone|@here|@[\p{L}\p{N}_.]+|#[\p{L}\p{N}_-]+/u, render: (m, k) => <span key={k} className="md-mention">{m[0]}</span> },
+  { re: /<(a?):[\w~]{2,32}:(\d{15,22})>/, render: (m, k) => (
+    <img key={k} className="md-emoji" alt="" src={`https://cdn.discordapp.com/emojis/${m[2]}.${m[1] ? "gif" : "png"}?size=48`} />) },
+  { re: /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/, render: (m, k) => <span key={k} className="md-link" title={m[2]}>{inline(m[1], k)}</span> },
+  { re: /<@[!&]?\d+>|<#\d+>|@everyone|@here|@[\p{L}\p{N}_.]+|#[\p{L}\p{N}_-]+/u, render: (m, k) => <Mention key={k} raw={m[0]} /> },
   { re: /https?:\/\/[^\s<]+[^\s<.,:;"')\]]/, render: (m, k) => <span key={k} className="md-link">{m[0]}</span> },
 ];
 

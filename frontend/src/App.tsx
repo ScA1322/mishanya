@@ -19,6 +19,7 @@ import Autoroles from "./pages/Autoroles";
 import Commands from "./pages/Commands";
 import Logs from "./pages/Logs";
 import Menus from "./pages/Menus";
+import Posts from "./pages/Posts";
 import Tickets from "./pages/Tickets";
 import Music from "./pages/Music";
 import TempVoice from "./pages/TempVoice";
@@ -50,6 +51,7 @@ const GUILD_NAV: [string, IconName, string][] = [
   ["welcome", "userPlus", "Приветствия"],
   ["autoroles", "tag", "Автороли"],
   ["commands", "terminal", "Команды"],
+  ["posts", "image", "Посты"],
   ["menus", "layout", "Меню с кнопками"],
   ["tickets", "ticket", "Тикеты"],
   ["music", "music", "Музыка"],
@@ -178,6 +180,7 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
             <Route path="autoroles" element={<Autoroles />} />
             <Route path="commands" element={<Commands />} />
             <Route path="logs" element={<Logs />} />
+            <Route path="posts" element={<Posts />} />
             <Route path="menus" element={<Menus />} />
             <Route path="tickets" element={<Tickets />} />
             <Route path="music" element={<Music />} />

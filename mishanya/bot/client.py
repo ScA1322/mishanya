@@ -35,6 +35,7 @@ COGS = [
     "mishanya.bot.cogs.menus",
     "mishanya.bot.cogs.music",
     "mishanya.bot.cogs.tempvoice",
+    "mishanya.bot.cogs.posts",
 ]
 
 # Права, которые запрашиваются в ссылке приглашения и проверяются на странице диагностики.

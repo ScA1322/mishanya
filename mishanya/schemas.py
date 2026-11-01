@@ -4,6 +4,8 @@ Discord ID везде передаются строками: JavaScript теря
 """
 from __future__ import annotations
 
+import re
+
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -467,6 +469,112 @@ class RoleSelectConfig(Strict):
         if self.min_values > self.max_values:
             raise ValueError("Минимум выбранных ролей не может быть больше максимума")
         return self
+
+
+# ---------------------------------------------------------------- Посты (оформленные сообщения)
+
+UPLOAD_RE = r"^[a-z0-9-]{1,80}\.(png|jpg|gif|webp)$"
+MAX_POST_EMBED_CHARS = 6000  # лимит Discord на суммарный текст всех embed одного сообщения
+
+
+def _image_ref(v: str, what: str) -> str:
+    """Картинка — ссылка https://… или загруженный файл «upload:имя»."""
+    v = v.strip()
+    if not v:
+        return v
+    if v.startswith("upload:"):
+        if not re.match(UPLOAD_RE, v[7:]):
+            raise ValueError(f"{what}: неверное имя загруженного файла")
+        return v
+    if not v.startswith(("https://", "http://")):
+        raise ValueError(f"{what}: ссылка должна начинаться с https://")
+    return v
+
+
+class PostField(Strict):
+    name: str = Field(min_length=1, max_length=256)
+    value: str = Field(min_length=1, max_length=1024)
+    inline: bool = False
+
+
+class PostEmbed(Strict):
+    color: Color = "#5865F2"
+    author_name: str = Field("", max_length=256)
+    author_icon: str = Field("", max_length=600)
+    author_url: str = Field("", max_length=512)
+    title: str = Field("", max_length=256)
+    url: str = Field("", max_length=512)
+    description: str = Field("", max_length=4096)
+    fields: list[PostField] = Field(default_factory=list, max_length=25)
+    thumbnail: str = Field("", max_length=600)
+    image: str = Field("", max_length=600)
+    footer: str = Field("", max_length=2048)
+    footer_icon: str = Field("", max_length=600)
+    timestamp: bool = False
+
+    @field_validator("author_icon", "thumbnail", "image", "footer_icon")
+    @classmethod
+    def _img(cls, v: str) -> str:
+        return _image_ref(v, "Изображение")
+
+    @field_validator("author_url", "url")
+    @classmethod
+    def _link(cls, v: str) -> str:
+        v = v.strip()
+        if v and not v.startswith(("https://", "http://")):
+            raise ValueError("Ссылка должна начинаться с https://")
+        return v
+
+    @property
+    def text_length(self) -> int:
+        return (len(self.author_name) + len(self.title) + len(self.description) + len(self.footer)
+                + sum(len(f.name) + len(f.value) for f in self.fields))
+
+    @property
+    def empty(self) -> bool:
+        return not (self.text_length or self.image or self.thumbnail)
+
+
+class PostConfig(Strict):
+    name: str = Field(min_length=1, max_length=100)
+    channel_id: OptSnowflake = None
+    content: str = Field("", max_length=2000)
+    embeds: list[PostEmbed] = Field(default_factory=list, max_length=10)
+    attachments: list[str] = Field(default_factory=list, max_length=10)  # «upload:имя» под сообщением
+    ping: bool = False  # разрешить упоминаниям в тексте сообщения уведомлять участников и роли
+
+    @field_validator("attachments")
+    @classmethod
+    def _att(cls, v: list[str]) -> list[str]:
+        out = [_image_ref(x, "Вложение") for x in v if x.strip()]
+        if any(not x.startswith("upload:") for x in out):
+            raise ValueError("Вложения — только загруженные файлы")
+        return out
+
+    @model_validator(mode="after")
+    def _limits(self) -> "PostConfig":
+        total = sum(e.text_length for e in self.embeds)
+        if total > MAX_POST_EMBED_CHARS:
+            raise ValueError(f"Слишком много текста во всех блоках вместе: {total} из {MAX_POST_EMBED_CHARS} символов")
+        if any(e.empty for e in self.embeds):
+            raise ValueError("Есть пустой блок embed — заполните его или удалите")
+        files = {x for e in self.embeds for x in (e.author_icon, e.thumbnail, e.image, e.footer_icon)
+                 if x.startswith("upload:")} | set(self.attachments)
+        if len(files) > 10:
+            raise ValueError("Discord принимает не больше 10 файлов в одном сообщении")
+        return self
+
+    def uploads(self) -> list[str]:
+        """Имена всех загруженных файлов, на которые ссылается пост (без повторов, по порядку)."""
+        names: list[str] = []
+        for e in self.embeds:
+            for x in (e.author_icon, e.thumbnail, e.image, e.footer_icon):
+                if x.startswith("upload:") and x[7:] not in names:
+                    names.append(x[7:])
+        for x in self.attachments:
+            if x[7:] not in names:
+                names.append(x[7:])
+        return names
 
 
 class MenuConfig(Strict):
