@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 
 import discord
@@ -23,7 +24,7 @@ from ...services.music import (
     voice_available,
 )
 from ..client import MishanyaBot
-from ..utils import COLOR_INFO, UserFacingError, ok_embed, require_guild, respond, safe_send
+from ..utils import COLOR_INFO, UserFacingError, guarded, ok_embed, require_guild, respond, safe_send
 
 log = logging.getLogger(__name__)
 ALONE_LEAVE_SECONDS = 60
@@ -40,6 +41,7 @@ class GuildPlayer:
         self.skip_requested = False
         self.idle_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
+        self.np_message: discord.Message | None = None  # сообщение «Сейчас играет» с кнопками
 
     def cancel_idle(self) -> None:
         if self.idle_task is not None and not self.idle_task.done():
@@ -58,13 +60,79 @@ def track_line(t: Track) -> str:
     return f"[{t.title}]({t.page_url}) · {t.duration_text}" + (f" · <@{t.requester_id}>" if t.requester_id else "")
 
 
+LOOP_NEXT = {"off": "track", "track": "queue", "queue": "off"}
+LOOP_SHORT = {"off": "выкл", "track": "трек", "queue": "очередь"}
+VOLUME_STEP = 10
+
+
+def np_embed(player: GuildPlayer, paused: bool) -> discord.Embed:
+    track = player.queue.current
+    embed = discord.Embed(title="⏸️ На паузе" if paused else "🎵 Сейчас играет",
+                          description=track_line(track) if track else "—", color=COLOR_INFO)
+    if track and track.thumbnail:
+        embed.set_thumbnail(url=track.thumbnail)
+    parts = [track.artist] if track and track.artist else []
+    parts += [f"🔊 {player.queue.volume}%", f"🔁 {LOOP_SHORT[player.queue.loop]}"]
+    if player.queue.tracks:
+        parts.append(f"в очереди: {len(player.queue.tracks)}")
+    embed.set_footer(text=" · ".join(parts))
+    return embed
+
+
+class MusicControl(discord.ui.DynamicItem[discord.ui.Button],
+                   template=r"mishanya:music:(?P<action>pause|skip|stop|loop|shuffle|queue|voldown|volup)"):
+    """Кнопка под «Сейчас играет». Состояние берётся из плеера при нажатии, поэтому кнопки переживают перезапуск."""
+
+    def __init__(self, action: str, button: discord.ui.Button | None = None):
+        super().__init__(button or discord.ui.Button(custom_id=f"mishanya:music:{action}"))
+        self.action = action
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item,  # noqa: ARG003
+                             match: re.Match[str], /) -> "MusicControl":
+        return cls(match["action"], item)  # type: ignore[arg-type]
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog("Music")  # type: ignore[union-attr]
+        if cog is not None:
+            await guarded(interaction, cog.handle_control(interaction, self.action))
+
+
+def controls_view(player: GuildPlayer, paused: bool) -> discord.ui.View:
+    def btn(action: str, emoji: str, label: str | None, row: int,
+            style: discord.ButtonStyle = discord.ButtonStyle.secondary, disabled: bool = False) -> MusicControl:
+        return MusicControl(action, discord.ui.Button(custom_id=f"mishanya:music:{action}", emoji=emoji, label=label,
+                                                      style=style, row=row, disabled=disabled))
+
+    loop = player.queue.loop
+    view = discord.ui.View(timeout=None)
+    for item in (
+        btn("pause", "▶️" if paused else "⏸️", "Продолжить" if paused else "Пауза", 0,
+            discord.ButtonStyle.success if paused else discord.ButtonStyle.primary),
+        btn("skip", "⏭️", "Пропустить", 0),
+        btn("stop", "⏹️", "Стоп", 0, discord.ButtonStyle.danger),
+        btn("loop", "🔂" if loop == "track" else "🔁", f"Повтор: {LOOP_SHORT[loop]}", 1,
+            discord.ButtonStyle.success if loop != "off" else discord.ButtonStyle.secondary),
+        btn("shuffle", "🔀", "Перемешать", 1, disabled=len(player.queue.tracks) < 2),
+        btn("queue", "📜", "Очередь", 1),
+        btn("voldown", "🔉", None, 1, disabled=player.queue.volume <= VOLUME_STEP),
+        btn("volup", "🔊", None, 1, disabled=player.queue.volume >= 200),
+    ):
+        view.add_item(item)
+    return view
+
+
 class Music(commands.Cog):
     def __init__(self, bot: MishanyaBot):
         self.bot = bot
         self.app = bot.app
         self.players: dict[int, GuildPlayer] = {}
 
+    async def cog_load(self) -> None:
+        self.bot.add_dynamic_items(MusicControl)
+
     async def cog_unload(self) -> None:
+        self.bot.remove_dynamic_items(MusicControl)
         for vc in list(self.bot.voice_clients):
             try:
                 await vc.disconnect(force=True)
@@ -155,6 +223,7 @@ class Music(commands.Cog):
                 track = player.queue.next()
                 if track is None:
                     player.started_at = None
+                    await self._close_np(player)
                     self._schedule_idle(guild_id)
                     return
                 try:
@@ -184,15 +253,41 @@ class Music(commands.Cog):
                     player.queue.clear()
                     await self._notify(guild, player, f"❌ Не удалось включить музыку: {exc}")
                     return
-                embed = discord.Embed(title="🎵 Сейчас играет", description=track_line(track), color=COLOR_INFO)
-                if track.artist:
-                    embed.set_footer(text=track.artist)
-                if track.thumbnail:
-                    embed.set_thumbnail(url=track.thumbnail)
-                await self._notify(guild, player, embed=embed)
+                await self._close_np(player)
+                player.np_message = await self._notify(guild, player, embed=np_embed(player, paused=False),
+                                                       view=controls_view(player, paused=False))
                 return
             player.queue.current = None
             self._schedule_idle(guild_id)
+
+    async def _close_np(self, player: GuildPlayer, footer: str | None = None) -> None:
+        """Убирает кнопки с прошлого сообщения «Сейчас играет» (трек закончился, музыка остановлена)."""
+        msg, player.np_message = player.np_message, None
+        if msg is None:
+            return
+        kwargs: dict = {"view": None}
+        if footer and msg.embeds:
+            embed = msg.embeds[0]
+            embed.title = "🎵 Играло"
+            embed.set_footer(text=footer)
+            kwargs["embed"] = embed
+        try:
+            await msg.edit(**kwargs)
+        except discord.HTTPException:
+            pass
+
+    async def _refresh_np(self, guild_id: int) -> None:
+        """Обновляет кнопки и подпись «Сейчас играет» после паузы, повтора или громкости из команды/панели."""
+        player = self.players.get(guild_id)
+        guild = self.bot.get_guild(guild_id)
+        vc = self._voice(guild) if guild else None
+        if player is None or player.np_message is None or vc is None:
+            return
+        paused = vc.is_paused()
+        try:
+            await player.np_message.edit(embed=np_embed(player, paused), view=controls_view(player, paused))
+        except discord.HTTPException:
+            player.np_message = None
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -211,11 +306,15 @@ class Music(commands.Cog):
         asyncio.run_coroutine_threadsafe(self._play_next(guild_id), self.bot.loop)
 
     async def _notify(self, guild: discord.Guild, player: GuildPlayer, text: str | None = None,
-                      embed: discord.Embed | None = None) -> None:
+                      embed: discord.Embed | None = None,
+                      view: discord.ui.View | None = None) -> discord.Message | None:
         channel = guild.get_channel_or_thread(player.text_channel_id or 0)
-        if channel is not None and hasattr(channel, "send"):
-            await safe_send(channel, content=text, embed=embed,  # type: ignore[arg-type]
-                            allowed_mentions=discord.AllowedMentions.none())
+        if channel is None or not hasattr(channel, "send"):
+            return None
+        kwargs: dict = {"content": text, "embed": embed, "allowed_mentions": discord.AllowedMentions.none()}
+        if view is not None:
+            kwargs["view"] = view
+        return await safe_send(channel, **kwargs)  # type: ignore[arg-type]
 
     def _schedule_idle(self, guild_id: int, seconds: float | None = None) -> None:
         player = self.players.get(guild_id)
@@ -241,6 +340,7 @@ class Music(commands.Cog):
         if player is not None:
             player.cancel_idle()
             player.queue.clear()
+            await self._close_np(player, "👋 Бот вышел из голосового канала")
         vc = self._voice(guild) if guild else None
         if vc is not None:
             await vc.disconnect(force=False)
@@ -254,6 +354,7 @@ class Music(commands.Cog):
                 player = self.players.pop(guild.id, None)
                 if player is not None:
                     player.cancel_idle()
+                    await self._close_np(player, "👋 Бот отключён от голосового канала")
             return
         vc = self._voice(guild)
         if vc is None:
@@ -285,23 +386,37 @@ class Music(commands.Cog):
             "voice_available": voice_available(),
         }
 
-    async def control(self, guild_id: int, action: str) -> None:
+    async def control(self, guild_id: int, action: str, by: str | None = None) -> None:
+        """Управление плеером из команд, кнопок и панели. by — кто нажал (для подписи под треком)."""
         guild = self.bot.get_guild(guild_id)
         vc = self._voice(guild) if guild else None
         player = self.players.get(guild_id)
         if vc is None:
             raise UserFacingError("Бот не находится в голосовом канале.")
+        suffix = f" — {by}" if by else ""
         if action == "skip":
             if not (vc.is_playing() or vc.is_paused()):
                 raise UserFacingError("Сейчас ничего не играет.")
             if player:
                 player.skip_requested = True
+                await self._close_np(player, f"⏭️ Пропущено{suffix}")
             vc.stop()
         elif action == "stop":
             if player:
                 player.queue.clear()
                 player.queue.loop = "off"
+                await self._close_np(player, f"⏹️ Музыка остановлена{suffix}")
             vc.stop()
+        elif action in ("loop", "voldown", "volup"):
+            if player is None or player.queue.current is None:
+                raise UserFacingError("Сейчас ничего не играет.")
+            if action == "loop":
+                player.queue.loop = LOOP_NEXT[player.queue.loop]
+            else:
+                step = VOLUME_STEP if action == "volup" else -VOLUME_STEP
+                player.queue.volume = max(VOLUME_STEP, min(200, player.queue.volume + step))
+                if isinstance(vc.source, discord.PCMVolumeTransformer):
+                    vc.source.volume = player.queue.volume / 100
         elif action == "pause":
             if not vc.is_playing():
                 raise UserFacingError("Сейчас ничего не играет.")
@@ -323,6 +438,44 @@ class Music(commands.Cog):
             player.queue.shuffle()
         else:
             raise UserFacingError("Неизвестное действие.")
+        if action not in ("skip", "stop", "leave"):
+            await self._refresh_np(guild_id)
+
+    async def handle_control(self, interaction: discord.Interaction, action: str) -> None:
+        """Нажатие кнопки под «Сейчас играет»: те же проверки, что у slash-команд."""
+        guild, member = require_guild(interaction)
+        cfg = await self._check_enabled(guild)
+        player = self.players.get(guild.id)
+        if action == "queue":
+            await respond(interaction, embed=self._queue_embed(player), ephemeral=True)
+            return
+        vc = self._require_same_channel(guild, member)
+        if action != "pause":
+            self._require_dj(member, cfg, player)
+        if action == "pause":
+            action = "resume" if vc.is_paused() else "pause"
+        if player is not None and interaction.message is not None and player.np_message is None:
+            player.np_message = interaction.message  # кнопки старого сообщения после перезапуска бота
+        await self.control(guild.id, action, by=member.display_name)
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+    def _queue_embed(self, player: GuildPlayer | None) -> discord.Embed:
+        if player is None or (player.queue.current is None and not player.queue.tracks):
+            raise UserFacingError("Очередь пуста. Включите трек командой /play.")
+        lines = []
+        if player.queue.current:
+            lines.append(f"**Сейчас:** {track_line(player.queue.current)}\n")
+        for i, t in enumerate(list(player.queue.tracks)[:15], 1):
+            lines.append(f"`{i}.` {track_line(t)}")
+        rest = len(player.queue.tracks) - 15
+        if rest > 0:
+            lines.append(f"…и ещё {rest}")
+        embed = discord.Embed(title="🎶 Очередь", description="\n".join(lines)[:4000], color=COLOR_INFO)
+        embed.set_footer(text=f"Треков в очереди: {len(player.queue.tracks)} · "
+                              f"длительность {format_duration(player.queue.total_seconds)} · "
+                              f"повтор: {LOOP_NAMES[player.queue.loop]}")
+        return embed
 
     async def voice_test(self, guild_id: int) -> dict:
         """Ненадолго заходит в пустой голосовой канал, чтобы проверить соединение с голосовыми серверами Discord."""
@@ -421,7 +574,7 @@ class Music(commands.Cog):
         self._require_same_channel(guild, member)
         if dj:
             self._require_dj(member, cfg, self.players.get(guild.id))
-        await self.control(guild.id, action)
+        await self.control(guild.id, action, by=member.display_name)
         await respond(interaction, embed=ok_embed(done))
 
     @app_commands.command(name="skip", description="Пропустить текущий трек")
@@ -469,6 +622,7 @@ class Music(commands.Cog):
         if player is None:
             raise UserFacingError("Сейчас ничего не играет.")
         player.queue.loop = mode.value
+        await self._refresh_np(guild.id)
         await respond(interaction, embed=ok_embed(f"🔁 Повтор: {LOOP_NAMES[mode.value]}."))
 
     @app_commands.command(name="volume", description="Громкость музыки")
@@ -483,27 +637,14 @@ class Music(commands.Cog):
         player.queue.volume = percent
         if isinstance(vc.source, discord.PCMVolumeTransformer):
             vc.source.volume = percent / 100
+        await self._refresh_np(guild.id)
         await respond(interaction, embed=ok_embed(f"🔊 Громкость: {percent}%"))
 
     @app_commands.command(name="queue", description="Очередь треков")
     @app_commands.guild_only()
     async def queue_cmd(self, interaction: discord.Interaction) -> None:
         guild, _ = require_guild(interaction)
-        player = self.players.get(guild.id)
-        if player is None or (player.queue.current is None and not player.queue.tracks):
-            raise UserFacingError("Очередь пуста. Включите трек командой /play.")
-        lines = []
-        if player.queue.current:
-            lines.append(f"**Сейчас:** {track_line(player.queue.current)}\n")
-        for i, t in enumerate(list(player.queue.tracks)[:15], 1):
-            lines.append(f"`{i}.` {track_line(t)}")
-        rest = len(player.queue.tracks) - 15
-        if rest > 0:
-            lines.append(f"…и ещё {rest}")
-        embed = discord.Embed(title="🎶 Очередь", description="\n".join(lines)[:4000], color=COLOR_INFO)
-        embed.set_footer(text=f"Треков в очереди: {len(player.queue.tracks)} · "
-                              f"длительность {format_duration(player.queue.total_seconds)} · "
-                              f"повтор: {LOOP_NAMES[player.queue.loop]}")
+        embed = self._queue_embed(self.players.get(guild.id))
         await respond(interaction, embed=embed)
 
     @app_commands.command(name="nowplaying", description="Что сейчас играет")

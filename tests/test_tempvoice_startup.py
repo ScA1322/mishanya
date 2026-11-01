@@ -146,3 +146,18 @@ async def test_play_continues_when_defer_too_late(monkeypatch):
     cog._play = AsyncMock(side_effect=music_mod.UserFacingError("Сначала зайдите в голосовой канал."))
     await music_mod.Music.play.callback(cog, interaction, "lofi")
     assert "голосовой канал" in sent[0]["embed"].description
+
+
+def test_music_controls_view_reflects_state():
+    from mishanya.bot.cogs.music import GuildPlayer, controls_view, np_embed
+    from mishanya.services.music import Track
+
+    p = GuildPlayer(1, 50)
+    p.queue.current = Track(title="Song", page_url="https://soundcloud.com/a/b", artist="Artist")
+    items = {c.item.custom_id.rsplit(":", 1)[1]: c.item for c in controls_view(p, paused=False).children}
+    assert list(items) == ["pause", "skip", "stop", "loop", "shuffle", "queue", "voldown", "volup"]
+    assert items["pause"].label == "Пауза" and items["shuffle"].disabled  # перемешивать нечего
+    p.queue.loop, p.queue.volume = "track", 200
+    items = {c.item.custom_id.rsplit(":", 1)[1]: c.item for c in controls_view(p, paused=True).children}
+    assert items["pause"].label == "Продолжить" and items["loop"].label == "Повтор: трек" and items["volup"].disabled
+    assert np_embed(p, paused=True).title.startswith("⏸️") and "200%" in np_embed(p, False).footer.text
