@@ -73,7 +73,15 @@ class MishanyaTree(app_commands.CommandTree):
 
     async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         original = getattr(error, "original", error)
-        if isinstance(error, UserFacingError):
+        if isinstance(error, (app_commands.CommandNotFound, app_commands.CommandSignatureMismatch)):
+            # В Discord осталась старая версия команды: синхронизируем заново и подсказываем пользователю.
+            log.warning("Пришла устаревшая команда (%s) — синхронизирую slash-команды заново", error)
+            text = "Список команд обновляется. Через минуту перезапустите Discord (Ctrl+R) и повторите команду."
+            client = interaction.client
+            if isinstance(client, MishanyaBot) and time.monotonic() - client.last_forced_sync > 120:
+                client.last_forced_sync = time.monotonic()  # не чаще раза в 2 минуты — лимиты Discord
+                client.background(client.sync_commands(force=True))
+        elif isinstance(error, UserFacingError):
             text = str(error)
         elif isinstance(error, app_commands.MissingPermissions):
             text = "У вас недостаточно прав для этой команды."
@@ -115,6 +123,13 @@ class MishanyaBot(commands.Bot):
         self.app = app
         self.commands_synced: str | None = None
         self.last_sync_error: str | None = None
+        self.last_forced_sync = 0.0
+        self._tasks: set[asyncio.Task] = set()
+
+    def background(self, coro) -> None:  # noqa: ANN001
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     # ------------------------------------------------------------ жизненный цикл
 
