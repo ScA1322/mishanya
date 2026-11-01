@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import re
 from collections import deque
 from dataclasses import dataclass, field
@@ -82,7 +83,8 @@ def setup_logging(settings: Settings) -> ErrorBuffer:
     for h in list(root.handlers):
         root.removeHandler(h)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
-    redact = RedactingFilter([settings.discord_token, settings.panel_password])
+    redact = RedactingFilter([settings.discord_token, settings.panel_password,
+                              os.environ.get("MISHANYA_UPDATE_TOKEN", ""), os.environ.get("GITHUB_TOKEN", "")])
     console = logging.StreamHandler()
     file = logging.handlers.RotatingFileHandler(settings.data_dir / "mishanya.log", maxBytes=2_000_000,
                                                 backupCount=3, encoding="utf-8")

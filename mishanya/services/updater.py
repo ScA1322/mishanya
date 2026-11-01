@@ -40,6 +40,8 @@ BUILD_DIR = "frontend/dist/"
 
 GITHUB_REPO = os.environ.get("MISHANYA_UPDATE_REPO", "ScA1322/mishanya")
 GITHUB_BRANCH = os.environ.get("MISHANYA_UPDATE_BRANCH", "main")
+# Токен GitHub (fine-grained, только чтение) — нужен, если репозиторий закрыт. Берётся из .env при каждом запросе.
+TOKEN_VARS = ("MISHANYA_UPDATE_TOKEN", "GITHUB_TOKEN")
 VERSION_FILE = ".version"
 MANIFEST_FILE = ".update-manifest"
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
@@ -202,15 +204,29 @@ class UpdateService:
         return sha if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha) else None
 
     @staticmethod
-    def _http(url: str, timeout: int, limit: int = 5 * 1024 * 1024) -> bytes:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mishanya-updater",
-                                                   "Accept": "application/vnd.github+json"})
+    def _token() -> str:
+        return next((t for t in (os.environ.get(v, "").strip() for v in TOKEN_VARS) if t), "")
+
+    @classmethod
+    def _http(cls, url: str, timeout: int, limit: int = 5 * 1024 * 1024) -> bytes:
+        headers = {"User-Agent": "Mishanya-updater", "Accept": "application/vnd.github+json"}
+        token = cls._token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — только https://*.github.com
                 data = resp.read(limit + 1)
         except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise UpdateError("GitHub не принял токен обновлений (MISHANYA_UPDATE_TOKEN в .env): "
+                                  "он неверный или истёк.") from None
             if exc.code == 404:
-                raise UpdateError(f"Репозиторий {GITHUB_REPO} не найден на GitHub или закрыт.") from None
+                if token:
+                    raise UpdateError(f"Токен обновлений не даёт доступа к {GITHUB_REPO}: "
+                                      "проверьте, что он выдан на этот репозиторий с правом Contents: Read.") from None
+                raise UpdateError(f"Репозиторий {GITHUB_REPO} не найден на GitHub или закрыт. Если он закрытый — "
+                                  "впишите в .env MISHANYA_UPDATE_TOKEN=<токен GitHub с доступом на чтение>.") from None
             if exc.code in (403, 429):
                 raise UpdateError("GitHub временно ограничил число запросов. Проверка повторится позже.") from None
             raise UpdateError(f"GitHub ответил ошибкой {exc.code}.") from None
@@ -265,7 +281,10 @@ class UpdateService:
         sha = self._remote_sha
         if not sha:
             raise UpdateError("Сначала проверьте обновления.")
-        data = self._http(f"https://codeload.github.com/{GITHUB_REPO}/zip/{sha}", 180, MAX_ARCHIVE_BYTES)
+        # Закрытый репозиторий отдаёт архив только через API (оно перенаправит на codeload с временным доступом).
+        url = (f"https://api.github.com/repos/{GITHUB_REPO}/zipball/{sha}" if self._token()
+               else f"https://codeload.github.com/{GITHUB_REPO}/zip/{sha}")
+        data = self._http(url, 180, MAX_ARCHIVE_BYTES)
         try:
             archive = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile:

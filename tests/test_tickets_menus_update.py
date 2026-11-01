@@ -355,3 +355,40 @@ async def test_card_api(authed, app):
     assert files == {name, second["background_image"]} and first["background_image"] not in files
     bad = await authed.put(f"{base}/join/background", json={"data": base64.b64encode(b"zzz").decode()})
     assert bad.status_code == 422
+
+
+def test_private_repo_token(monkeypatch):
+    """С токеном запросы идут с авторизацией, а архив — через API (закрытый репозиторий)."""
+    import io
+    import urllib.error
+
+    from mishanya.services import updater as U
+
+    seen = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):  # noqa: ANN002
+            return False
+
+    def fake_urlopen(req, timeout):  # noqa: ANN001, ARG001
+        seen.append((req.full_url, req.get_header("Authorization")))
+        if "missing" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+        return Resp(b"{}")
+
+    monkeypatch.setattr(U.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("MISHANYA_UPDATE_TOKEN", raising=False)
+    UpdateService._http("https://api.github.com/x", 5)
+    assert seen[-1] == ("https://api.github.com/x", None)
+    with pytest.raises(UpdateError, match="MISHANYA_UPDATE_TOKEN"):
+        UpdateService._http("https://api.github.com/missing", 5)
+
+    monkeypatch.setenv("MISHANYA_UPDATE_TOKEN", "github_pat_test")
+    UpdateService._http("https://api.github.com/x", 5)
+    assert seen[-1] == ("https://api.github.com/x", "Bearer github_pat_test")
+    with pytest.raises(UpdateError, match="Contents: Read"):
+        UpdateService._http("https://api.github.com/missing", 5)
