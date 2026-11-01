@@ -45,11 +45,12 @@ def pick_phrase(phrases: list[str]) -> str | None:
 
 
 async def generate(*, api_key: str, base_url: str, model: str, system_prompt: str, history: str, channel: str,
-                   bot_name: str, mentioned: bool, temperature: float, max_tokens: int) -> str:
+                   bot_name: str, mentioned: bool, temperature: float, max_tokens: int,
+                   task: str | None = None) -> str:
     if not api_key:
         raise ChatterError("Ключ DeepSeek не задан")
-    task = ("Тебя упомянули или ответили на твоё сообщение — ответь на последнее сообщение."
-            if mentioned else "Влезь в разговор: напиши одно своё сообщение по теме последних сообщений.")
+    task = task or ("Тебя упомянули или ответили на твоё сообщение — ответь на последнее сообщение."
+                    if mentioned else "Влезь в разговор: напиши одно своё сообщение по теме последних сообщений.")
     user = f"Канал #{channel}. Последние сообщения (сверху старые):\n{history or '(сообщений нет)'}\n\n{task}"
     body = {
         "model": model,

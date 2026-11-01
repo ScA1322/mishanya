@@ -102,3 +102,32 @@ def test_hourly_limit():
     assert all(c._take_hourly(1, 3, 100.0 + i) for i in range(3))
     assert not c._take_hourly(1, 3, 200.0)
     assert c._take_hourly(1, 3, 100.0 + 3601)  # старые вышли из окна часа
+
+
+def test_speech_text_and_ffmpeg_options():
+    from mishanya.services.tts import ffmpeg_options, speech_text
+
+    assert speech_text("**Холопы** <@&123456789012345678> смотрите https://x.y 😂 <:kek:123456789012345678>") == "Холопы смотрите kek"
+    assert ffmpeg_options("edge", 20) == "-vn"
+    assert ffmpeg_options("google", 0) == "-vn"
+    assert "atempo=1.20" in ffmpeg_options("google", 20)
+
+
+async def test_voice_api(authed, monkeypatch):
+    from mishanya.api.routes import features
+
+    cfg = (await authed.get(f"/api/guilds/{GID}/config/chatter")).json()
+    assert cfg["voice_enabled"] is False and cfg["voice_engine"] == "auto"
+
+    async def fake_synth(text, voice, rate, pitch, engine):  # noqa: ANN001
+        assert (voice, engine) == ("dmitry", "auto")
+        return b"ID3fake-mp3", "google"
+
+    monkeypatch.setattr(features, "synthesize", fake_synth)
+    r = await authed.post(f"/api/guilds/{GID}/chatter/tts-preview", json={"text": "холопы", "config": cfg})
+    assert r.status_code == 200 and r.content == b"ID3fake-mp3" and r.headers["x-tts-engine"] == "google"
+    bad = await authed.post(f"/api/guilds/{GID}/chatter/tts-preview", json={"text": "x", "config": {**cfg, "voice_rate": 500}})
+    assert bad.status_code == 422
+    # без подключённого бота зайти в канал нельзя — понятная ошибка
+    r = await authed.post(f"/api/guilds/{GID}/chatter/voice-say", json={"config": cfg, "channel_id": GID})
+    assert r.status_code == 409

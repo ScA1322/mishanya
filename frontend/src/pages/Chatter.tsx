@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { errorText, post, put } from "../api";
+import { errorText, post, postBlob, put } from "../api";
 import { useMeta } from "../App";
 import { useApi, useModuleConfig, useUnsavedWarning } from "../hooks";
 import { Icon } from "../icons";
-import { Card, ChannelSelect, ErrorBox, Field, Loading, MultiChannelSelect, NumberInput, PageHeader, SaveBar, ToggleRow, useToast } from "../ui";
+import { Card, ChannelSelect, ErrorBox, Field, Loading, MultiChannelSelect, NumberInput, PageHeader, Picker, SaveBar, ToggleRow, useResources, useToast } from "../ui";
 
 interface ChatterConfig {
   enabled: boolean; channels: string[]; chance_percent: number; min_messages: number; cooldown_minutes: number; max_per_hour: number;
   reply_on_mention: boolean; reply_to_message: boolean; use_ai: boolean; system_prompt: string; context_messages: number;
   temperature: number; max_tokens: number; phrases: string[]; fallback_to_phrases: boolean;
+  voice_enabled: boolean; voice_channels: string[]; voice_interval_minutes: number; voice_max_per_hour: number;
+  voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google"; voice_name: "dmitry" | "svetlana";
+  voice_rate: number; voice_pitch: number;
 }
 interface Status { ai_configured: boolean; key_hint: string | null; model: string; last_error: string | null }
 interface TestResult { text: string | null; source: "ai" | "phrase"; error: string | null; context: string | null }
@@ -95,6 +98,121 @@ function TestCard({ guildId, cfg, onDone }: { guildId: string; cfg: ChatterConfi
   );
 }
 
+function VoiceChannelPicker({ value, onChange }: { value: string | null; onChange: (v: string | null) => void }) {
+  const { channels, connected } = useResources();
+  const items = useMemo(() => channels.filter((c) => c.type === "voice")
+    .map((c) => ({ id: c.id, label: c.name, group: c.category ?? null, icon: "volume" as const })), [channels]);
+  return <Picker items={items} value={value} onChange={onChange} placeholder="— голосовой канал —" searchPlaceholder="Поиск канала…"
+    emptyText={connected ? "Голосовых каналов нет" : "Бот не подключён"} />;
+}
+
+function VoiceChannelsMulti({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const { channels } = useResources();
+  const name = (id: string) => channels.find((c) => c.id === id)?.name ?? `канал ${id}`;
+  return (
+    <div className="chips">
+      {value.map((id) => (
+        <span key={id} className="chip"><Icon name="volume" size={12} className="muted" />{name(id)}
+          <button type="button" onClick={() => onChange(value.filter((x) => x !== id))} aria-label="Убрать"><Icon name="x" size={12} /></button></span>
+      ))}
+      <VoiceAdd exclude={value} onAdd={(id) => onChange([...value, id])} />
+    </div>
+  );
+}
+
+function VoiceAdd({ exclude, onAdd }: { exclude: string[]; onAdd: (id: string) => void }) {
+  const { channels } = useResources();
+  const items = channels.filter((c) => c.type === "voice" && !exclude.includes(c.id))
+    .map((c) => ({ id: c.id, label: c.name, group: c.category ?? null, icon: "volume" as const }));
+  return <Picker items={items} value={null} trigger={<><Icon name="plus" size={14} />Канал</>} searchPlaceholder="Поиск канала…"
+    emptyText="Голосовых каналов нет" onChange={(v) => v && onAdd(v)} />;
+}
+
+function VoiceCard({ guildId, d, set }: {
+  guildId: string; d: ChatterConfig; set: <K extends keyof ChatterConfig>(k: K, v: ChatterConfig[K]) => void;
+}) {
+  const toast = useToast();
+  const [text, setText] = useState("так, холопы, Император зашёл в канал. всем встать");
+  const [audio, setAudio] = useState<string | null>(null);
+  const [channel, setChannel] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"listen" | "say" | null>(null);
+  useEffect(() => () => { if (audio) URL.revokeObjectURL(audio); }, [audio]);
+
+  const listen = async () => {
+    setBusy("listen");
+    try {
+      const blob = await postBlob(`/api/guilds/${guildId}/chatter/tts-preview`, { text, config: d });
+      const url = URL.createObjectURL(blob);
+      setAudio(url);
+      new Audio(url).play().catch(() => undefined);
+    } catch (e) { toast("err", errorText(e)); }
+    finally { setBusy(null); }
+  };
+  const say = async (own: boolean) => {
+    if (!channel) { toast("err", "Выберите голосовой канал"); return; }
+    setBusy("say");
+    try {
+      const r = await post<{ said: string[] }>(`/api/guilds/${guildId}/chatter/voice-say`, { config: d, channel_id: channel, text: own ? text : "" });
+      toast("ok", r.said.length ? `Сказал: ${r.said.join(" / ")}` : "Нечего сказать — список фраз пуст");
+    } catch (e) { toast("err", errorText(e)); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <Card title="Болтовня в голосовых каналах" subtitle="Бот иногда сам заходит в голосовой канал, где сидят люди, говорит голосом пару фраз в своём характере и выходит. Слышать собеседников он не может — говорит по тому, кто сидит в канале и что пишут в его чате.">
+      <ToggleRow title="Заходить в голосовые каналы" hint="Работает, только если «Болтовня» включена. Во время музыки бот не заходит."
+        checked={d.voice_enabled} onChange={(v) => set("voice_enabled", v)} />
+      <div className="grid grid-2 mt">
+        <Field label="В какие каналы" hint="Пусто — в любой, где есть люди (кроме AFK)"><VoiceChannelsMulti value={d.voice_channels} onChange={(v) => set("voice_channels", v)} /></Field>
+        <Field label="В среднем раз в, минут" hint="Если в каналах кто-то сидит"><NumberInput value={d.voice_interval_minutes} min={5} max={1440} onChange={(v) => set("voice_interval_minutes", v)} /></Field>
+        <Field label="Не больше заходов в час"><NumberInput value={d.voice_max_per_hour} min={1} max={12} onChange={(v) => set("voice_max_per_hour", v)} /></Field>
+        <Field label="Минимум людей в канале"><NumberInput value={d.voice_min_members} min={1} max={50} onChange={(v) => set("voice_min_members", v)} /></Field>
+        <Field label="Фраз за один заход"><NumberInput value={d.voice_lines} min={1} max={5} onChange={(v) => set("voice_lines", v)} /></Field>
+      </div>
+
+      <h3 className="mt">Голос</h3>
+      <div className="grid grid-2 mt">
+        <Field label="Озвучка" hint="Microsoft звучит живее, но часто не отвечает — тогда бот сам переключится на Google">
+          <select className="input" value={d.voice_engine} onChange={(e) => set("voice_engine", e.target.value as ChatterConfig["voice_engine"])}>
+            <option value="auto">Microsoft, при сбое — Google (рекомендуется)</option>
+            <option value="edge">Только Microsoft</option>
+            <option value="google">Только Google (стабильно, женский голос)</option>
+          </select>
+        </Field>
+        <Field label="Голос Microsoft">
+          <select className="input" value={d.voice_name} disabled={d.voice_engine === "google"} onChange={(e) => set("voice_name", e.target.value as ChatterConfig["voice_name"])}>
+            <option value="dmitry">Дмитрий (мужской)</option>
+            <option value="svetlana">Светлана (женский)</option>
+          </select>
+        </Field>
+        <Field label={`Скорость: ${d.voice_rate > 0 ? "+" : ""}${d.voice_rate}%`}>
+          <input type="range" min={-50} max={100} step={5} value={d.voice_rate} onChange={(e) => set("voice_rate", Number(e.target.value))} />
+        </Field>
+        <Field label={`Высота голоса: ${d.voice_pitch > 0 ? "+" : ""}${d.voice_pitch} Гц`} hint="Только для Microsoft. Ниже — грубее">
+          <input type="range" min={-50} max={50} step={5} value={d.voice_pitch} disabled={d.voice_engine === "google"} onChange={(e) => set("voice_pitch", Number(e.target.value))} />
+        </Field>
+      </div>
+
+      <h3 className="mt">Попробовать</h3>
+      <Field label="Текст">
+        <input className="input" value={text} maxLength={400} onChange={(e) => setText(e.target.value)} />
+      </Field>
+      <div className="row mt">
+        <button className="btn" disabled={!!busy || !text.trim()} onClick={listen}><Icon name="play" size={15} />{busy === "listen" ? "Озвучиваю…" : "Прослушать здесь"}</button>
+        {audio && <audio controls src={audio} style={{ height: 36 }} />}
+      </div>
+      <div className="grid grid-2 mt" style={{ alignItems: "end" }}>
+        <Field label="Зайти в канал и сказать"><VoiceChannelPicker value={channel} onChange={setChannel} /></Field>
+        <div className="row">
+          <button className="btn btn-primary" disabled={!!busy || !channel || !text.trim()} onClick={() => say(true)}><Icon name="volume" size={15} />{busy === "say" ? "Говорю…" : "Сказать этот текст"}</button>
+          <button className="btn" disabled={!!busy || !channel} onClick={() => say(false)}>Пусть придумает сам</button>
+        </div>
+      </div>
+      <div className="small muted mt">Ещё можно командой <code>/say текст</code> в Discord (для админов): бот зайдёт в ваш голосовой канал и скажет это.</div>
+    </Card>
+  );
+}
+
 export default function Chatter() {
   const { guildId } = useParams();
   const meta = useMeta();
@@ -154,6 +272,8 @@ export default function Chatter() {
         </Card>
 
         <TestCard guildId={guildId!} cfg={d} onDone={status.reload} />
+
+        <VoiceCard guildId={guildId!} d={d} set={set} />
 
         <Card title={`Фразы (${d.phrases.length})`} subtitle="Используются без ключа DeepSeek или когда он не отвечает. Одна фраза — одна строка.">
           <textarea className="textarea" rows={10} value={d.phrases.join("\n")}

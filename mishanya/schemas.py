@@ -407,6 +407,17 @@ class ChatterConfig(Strict):
     max_tokens: int = Field(150, ge=16, le=1000)
     phrases: list[str] = Field(default_factory=lambda: list(DEFAULT_CHATTER_PHRASES), max_length=200)
     fallback_to_phrases: bool = True  # если DeepSeek недоступен — писать фразу из списка
+    # Голос: бот сам иногда заходит в голосовой канал с людьми и что-нибудь говорит
+    voice_enabled: bool = False
+    voice_channels: list[Snowflake] = Field(default_factory=list, max_length=50)  # пусто — любой с людьми
+    voice_interval_minutes: int = Field(30, ge=5, le=1440)  # в среднем раз во столько минут, если есть кому слушать
+    voice_max_per_hour: int = Field(2, ge=1, le=12)
+    voice_min_members: int = Field(1, ge=1, le=50)
+    voice_lines: int = Field(2, ge=1, le=5)  # фраз за один заход
+    voice_engine: Literal["auto", "edge", "google"] = "auto"  # auto: Microsoft, при сбое — Google
+    voice_name: Literal["dmitry", "svetlana"] = "dmitry"  # голос Microsoft
+    voice_rate: int = Field(10, ge=-50, le=100)  # скорость речи, %
+    voice_pitch: int = Field(-5, ge=-50, le=50)  # высота голоса, Гц
 
     @field_validator("phrases")
     @classmethod

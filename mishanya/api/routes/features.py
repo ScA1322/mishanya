@@ -17,6 +17,7 @@ from ...services.chatter import ChatterError, format_history, generate, pick_phr
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
 from ...services.music import self_test, voice_available
 from ...services.posts import PostLimit
+from ...services.tts import TtsError, synthesize
 from ...services.templates import SAMPLE_VALUES, member_values
 from ..auth import require_auth
 from ..deps import discord_guild, get_app, guild_id_dep, iso, user_label
@@ -384,6 +385,48 @@ async def chatter_test(body: ChatterTestIn, request: Request, guild_id: int = De
         return {"text": None, "source": "ai", "error": str(exc), "context": context}
     app.chatter_error = None
     return {"text": text, "source": "ai", "error": None, "context": context}
+
+
+class TtsPreviewIn(BaseModel):
+    text: str = Field(min_length=1, max_length=400)
+    config: dict
+
+
+@router.post("/chatter/tts-preview")
+async def chatter_tts_preview(body: TtsPreviewIn, guild_id: int = Depends(guild_id_dep)) -> Response:  # noqa: ARG001
+    """Озвучивает текст голосом из настроек и отдаёт MP3 в браузер. В Discord ничего не отправляет."""
+    try:
+        cfg = ChatterConfig.model_validate(body.config)
+    except ValidationError as exc:
+        raise HTTPException(422, validation_detail(exc)) from None
+    try:
+        data, engine = await synthesize(body.text, cfg.voice_name, cfg.voice_rate, cfg.voice_pitch, cfg.voice_engine)
+    except TtsError as exc:
+        raise HTTPException(502, str(exc)) from None
+    return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": engine, "Cache-Control": "no-store"})
+
+
+class VoiceSayIn(BaseModel):
+    config: dict
+    channel_id: str = Field(pattern=r"^\d{15,22}$")
+    text: str = Field("", max_length=400)
+
+
+@router.post("/chatter/voice-say")
+async def chatter_voice_say(body: VoiceSayIn, request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Бот заходит в выбранный голосовой канал и говорит текст (или придумывает сам), затем выходит."""
+    app = get_app(request)
+    try:
+        cfg = ChatterConfig.model_validate(body.config)
+    except ValidationError as exc:
+        raise HTTPException(422, validation_detail(exc)) from None
+    cog = _bot_cog(request, "Chatter")
+    dg = discord_guild(app, guild_id)
+    channel = dg.get_channel(int(body.channel_id)) if dg else None
+    if not isinstance(channel, discord.VoiceChannel):
+        raise HTTPException(404, "Голосовой канал не найден")
+    said = await _discord_call(cog.visit(channel, cfg, [body.text.strip()] if body.text.strip() else None))
+    return {"said": said}
 
 
 @router.post("/music-selftest")
