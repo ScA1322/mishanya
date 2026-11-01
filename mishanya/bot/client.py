@@ -135,7 +135,9 @@ class MishanyaBot(commands.Bot):
 
     async def sync_commands(self, force: bool) -> int | None:
         """Синхронизирует slash-команды глобально, только если они изменились (лимиты Discord)."""
-        digest = self.commands_hash()
+        # В хэш входит ID приложения: если сменили токен/бота (или перенесли папку data), команды
+        # нового бота ещё не зарегистрированы, даже если сами команды не менялись.
+        digest = f"{self.application_id}:{self.commands_hash()}"
         stored = await self.app.config.get_value("commands_hash")
         if not force and stored == digest:
             self.commands_synced = "актуальны"
@@ -184,8 +186,8 @@ class MishanyaBot(commands.Bot):
             missing = sorted(local - remote)
             steps.append({"name": "Slash-команды в Discord", "ok": not missing, "detail": (
                 f"зарегистрировано {len(remote)}" if not missing else
-                f"не зарегистрированы: {', '.join('/' + m for m in missing[:10])}. Нажмите «Синхронизировать "
-                "команды» на странице диагностики.")})
+                f"не зарегистрированы: {', '.join('/' + m for m in missing[:10])}. Откройте «Общие настройки» "
+                "и нажмите «Пересинхронизировать slash-команды».")})
         except discord.HTTPException as exc:
             steps.append({"name": "Slash-команды в Discord", "ok": False, "detail": str(exc)})
         return steps
@@ -197,8 +199,13 @@ class MishanyaBot(commands.Bot):
             self._health_logged = True
             try:
                 for step in await self.command_health():
-                    if not step["ok"]:
-                        log.warning("Команды могут не работать — %s: %s", step["name"], step["detail"])
+                    if step["ok"]:
+                        continue
+                    if step["name"] == "Slash-команды в Discord":
+                        log.warning("В Discord зарегистрированы не все slash-команды — синхронизирую заново")
+                        if await self.sync_commands(force=True) is not None:
+                            continue
+                    log.warning("Команды могут не работать — %s: %s", step["name"], step["detail"])
             except Exception:  # noqa: BLE001
                 log.exception("Не удалось проверить работу slash-команд")
         self.app.bot_error = None
