@@ -159,7 +159,7 @@ async def test_wake_word_and_followup(monkeypatch):
     settings = SimpleNamespace(stt_key="k", stt_url="u", stt_model="m", deepseek_api_key="k",
                                deepseek_base_url="u", deepseek_model="m")
     cog = L.Listener.__new__(L.Listener)
-    cog.bot = SimpleNamespace(get_guild=lambda gid: guild)
+    cog.bot = SimpleNamespace(get_guild=lambda gid: guild, get_cog=lambda name: None)
     cog.app = SimpleNamespace(settings=settings, chatter_error=None)
     cog.stt_sem = L.asyncio.Semaphore(2)
     session = L.Session(vc=vc, channel_id=10, started=0, collector=L.UtteranceCollector())

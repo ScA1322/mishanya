@@ -53,6 +53,10 @@ class Settings:
     stt_api_key: str = ""
     stt_base_url: str = ""
     stt_model: str = "gpt-4o-transcribe"
+    # Модель со зрением для скриншотов (например gpt-4o-mini у Inferhold). Пусто — картинки не смотрит.
+    vision_model: str = ""
+    vision_api_key: str = ""
+    vision_base_url: str = ""
     env_path: Path = field(default_factory=lambda: BASE_DIR / ".env")
 
     @property
@@ -62,6 +66,14 @@ class Settings:
     @property
     def stt_url(self) -> str:
         return self.stt_base_url or self.deepseek_base_url
+
+    @property
+    def vision_key(self) -> str:
+        return self.vision_api_key or self.deepseek_api_key
+
+    @property
+    def vision_url(self) -> str:
+        return self.vision_base_url or self.deepseek_base_url
 
     @property
     def db_path(self) -> Path:
@@ -126,5 +138,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         stt_api_key=os.getenv("STT_API_KEY", "").strip(),
         stt_base_url=os.getenv("STT_BASE_URL", "").strip().rstrip("/"),
         stt_model=os.getenv("STT_MODEL", "").strip() or "gpt-4o-transcribe",
+        vision_model=os.getenv("VISION_MODEL", "").strip(),
+        vision_api_key=os.getenv("VISION_API_KEY", "").strip(),
+        vision_base_url=os.getenv("VISION_BASE_URL", "").strip().rstrip("/"),
         env_path=env_path,
     )

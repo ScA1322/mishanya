@@ -144,6 +144,29 @@ async def set_ai_key(body: AiKeyIn, request: Request) -> dict:
     return {"ai_configured": bool(key), "key_hint": f"…{key[-4:]}" if key else None}
 
 
+class AiModelsIn(BaseModel):
+    base_url: str = Field(max_length=200, pattern=r"^https?://[A-Za-z0-9.\-:/_]+$")
+    model: str = Field(max_length=100, pattern=r"^[A-Za-z0-9_\-.:/]+$")
+    vision_model: str = Field("", max_length=100, pattern=r"^[A-Za-z0-9_\-.:/]*$")
+
+
+@router.put("/ai/models")
+async def set_ai_models(body: AiModelsIn, request: Request) -> dict:
+    """Адрес API и модели (текст и картинки) — пишутся в .env и применяются сразу."""
+    app = get_app(request)
+    s = app.settings
+    values = {"DEEPSEEK_BASE_URL": body.base_url.rstrip("/"), "DEEPSEEK_MODEL": body.model,
+              "VISION_MODEL": body.vision_model}
+    try:
+        for k, v in values.items():
+            await asyncio.to_thread(set_env_value, s.env_path, k, v)
+    except OSError as exc:
+        raise HTTPException(500, f"Не удалось записать .env: {exc}") from None
+    s.deepseek_base_url, s.deepseek_model, s.vision_model = values["DEEPSEEK_BASE_URL"], body.model, body.vision_model
+    app.chatter_error = None
+    return {"base_url": s.deepseek_base_url, "model": s.deepseek_model, "vision_model": s.vision_model}
+
+
 @router.get("/logs/tail")
 async def logs_tail(request: Request, lines: int = 300) -> dict:
     """Последние строки data/mishanya.log — чтобы журнал можно было скопировать прямо из панели."""

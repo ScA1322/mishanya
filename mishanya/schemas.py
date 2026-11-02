@@ -58,6 +58,9 @@ class LevelingConfig(Strict):
     announce_mode: Literal["current", "channel", "dm", "off"] = "current"
     announce_channel_id: OptSnowflake = None
     levelup_message: str = Field("🎉 {user}, поздравляем! Новый уровень: **{level}**.", max_length=2000)
+    # Отдельное сообщение с упоминанием, когда за новый уровень выдаётся роль-награда
+    reward_announce: bool = True
+    reward_message: str = Field("🏅 {user} дорос до **{level}** уровня и получает роль {role}!", max_length=2000)
     no_xp_channels: list[Snowflake] = Field(default_factory=list, max_length=200)
     no_xp_categories: list[Snowflake] = Field(default_factory=list, max_length=100)
     no_xp_roles: list[Snowflake] = Field(default_factory=list, max_length=100)
@@ -391,6 +394,13 @@ DEFAULT_CHATTER_PHRASES = [
 ]
 
 
+class VoiceTrigger(Strict):
+    """Фраза в голосовом канале → запуск игры Steam на компьютере, где работает бот."""
+    phrase: str = Field(min_length=2, max_length=100)
+    steam_app_id: int = Field(ge=1, le=99_999_999)
+    title: str = Field("", max_length=100)
+
+
 class ChatterConfig(Strict):
     enabled: bool = False
     channels: list[Snowflake] = Field(default_factory=list, max_length=50)  # пусто — все текстовые каналы
@@ -424,6 +434,44 @@ class ChatterConfig(Strict):
     listen_min_seconds: float = Field(0.6, ge=0.2, le=5)  # короче — не распознаём (кашель, «ага»)
     listen_max_minutes: int = Field(60, ge=5, le=600)  # потом выходит, чтобы не тратить деньги впустую
     listen_auto: bool = False  # сам садиться в голосовой канал, где больше всего людей
+    # Диалог в чате
+    wake_words_in_text: bool = True  # слова-обращения работают и в тексте («император, ты где?»)
+    dialog_seconds: int = Field(120, ge=0, le=900)  # после ответа продолжает разговор с этим человеком без обращения
+    reply_cooldown_seconds: int = Field(2, ge=0, le=120)  # между ответами одному человеку
+    dialog_max_per_hour: int = Field(120, ge=1, le=600)  # ответов на обращения в час на сервер
+    # Память: бот сам запоминает факты о людях и сервере и использует их в разговоре
+    memory_enabled: bool = True
+    memory_max: int = Field(300, ge=10, le=2000)
+    # Картинки: смотрит скриншоты (нужна модель со зрением, VISION_MODEL в .env или в панели)
+    vision_enabled: bool = True
+    # Обиды: за издевательства и оскорбления — мут и снятие ролей до извинения в отдельном канале
+    punish_enabled: bool = False
+    punish_min_level: int = Field(2, ge=1, le=3)  # 1 — подколы, 2 — оскорбления, 3 — только жёсткие
+    punish_mute_minutes: int = Field(10, ge=0, le=1440)  # 0 — без мута
+    punish_remove_roles: bool = True
+    apology_channel_id: OptSnowflake = None
+    punish_exempt_roles: list[Snowflake] = Field(default_factory=list, max_length=50)
+    # Перемещение по голосовым каналам по просьбе в чате или голосом
+    move_enabled: bool = True
+    move_others_requires_permission: bool = True  # чужих двигает, только если просит тот, у кого есть право
+    # Доверенные: личная переписка с ботом и его доклады в ЛС
+    confidants: list[Snowflake] = Field(default_factory=list, max_length=10)
+    confidant_dm_chat: bool = True
+    # Личка для всех: участникам сервера — без внутренних дел, посторонним — холодно; о любопытных — доклад
+    dm_open: bool = True
+    dm_max_per_hour: int = Field(40, ge=1, le=600)  # ответов одному человеку в час
+    report_inactive_days: int = Field(7, ge=0, le=365)  # 0 — не докладывать
+    gossip_hours: int = Field(12, ge=0, le=168)  # 0 — не сплетничать
+    # Голосовые триггеры (работают, пока бот слушает)
+    voice_triggers: list[VoiceTrigger] = Field(
+        default_factory=lambda: [VoiceTrigger(phrase="аллаху акбар", steam_app_id=376210, title="The Isle")],
+        max_length=20)
+    trigger_cooldown_minutes: int = Field(10, ge=0, le=1440)
+
+    @field_validator("confidants", "punish_exempt_roles")
+    @classmethod
+    def _dedupe_ids(cls, v: list[str]) -> list[str]:
+        return _dedupe(v)
 
     @field_validator("listen_wake_words")
     @classmethod

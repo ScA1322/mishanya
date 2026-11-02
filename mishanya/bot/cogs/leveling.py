@@ -97,19 +97,36 @@ class Leveling(commands.Cog):
     async def on_level_up(self, member: discord.Member, old_level: int, new_level: int, total_xp: int,
                           cfg: LevelingConfig, channel: discord.abc.Messageable | None = None) -> None:
         await self.sync_rewards(member, new_level, cfg, from_level=old_level)
-        if cfg.announce_mode == "off" or not cfg.levelup_message.strip():
-            return
-        rank = await self.app.leveling.rank_of(member.guild.id, member.id)
-        text = render(cfg.levelup_message, member_values(member, channel=channel, level=new_level, xp=total_xp,
-                                                         rank=rank or "?"))[:2000]
-        if cfg.announce_mode == "dm":
-            try:
-                await member.send(text)
-            except discord.HTTPException:
-                pass
-            return
         target = channel_from_id(member.guild, cfg.announce_channel_id) if cfg.announce_mode == "channel" else channel
-        await safe_send(target, content=text)
+        if cfg.announce_mode != "off" and cfg.levelup_message.strip():
+            rank = await self.app.leveling.rank_of(member.guild.id, member.id)
+            text = render(cfg.levelup_message, member_values(member, channel=channel, level=new_level, xp=total_xp,
+                                                             rank=rank or "?"))[:2000]
+            if cfg.announce_mode == "dm":
+                try:
+                    await member.send(text)
+                except discord.HTTPException:
+                    pass
+            else:
+                await safe_send(target, content=text)
+        await self.announce_rewards(member, old_level, new_level, cfg, target)
+
+    async def announce_rewards(self, member: discord.Member, old_level: int, new_level: int, cfg: LevelingConfig,
+                               target: discord.abc.Messageable | None) -> None:
+        """Отдельное сообщение с упоминанием участника за каждую роль-награду, полученную на этом уровне."""
+        if not cfg.reward_announce or not cfg.reward_message.strip() or target is None:
+            return
+        rewards = [r for r in await self.app.leveling.list_rewards(member.guild.id)
+                   if r.enabled and old_level < r.level <= new_level]
+        for r in rewards:
+            role = member.guild.get_role(r.role_id)
+            if role is None:
+                continue
+            text = render(cfg.reward_message, member_values(member, channel=target, level=r.level,
+                                                            role=role.mention, role_name=role.name))[:2000]
+            # Пингуем только самого участника, роль не пингуем.
+            await safe_send(target, content=text, allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=[member]))
 
     async def sync_rewards(self, member: discord.Member, level: int, cfg: LevelingConfig,
                            from_level: int | None = None) -> list[str]:

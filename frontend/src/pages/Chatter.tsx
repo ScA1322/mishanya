@@ -4,9 +4,10 @@ import { errorText, post, postBlob, put } from "../api";
 import { useMeta } from "../App";
 import { useApi, useModuleConfig, useUnsavedWarning } from "../hooks";
 import { Icon } from "../icons";
+import { ConfidantsCard, DialogCard, GrudgeCard, MemoryCard, type MindConfig, ModelsCard, MoveCard, TriggersCard } from "./ChatterMind";
 import { Card, ChannelSelect, ErrorBox, Field, Loading, MultiChannelSelect, NumberInput, PageHeader, Picker, SaveBar, ToggleRow, useResources, useToast } from "../ui";
 
-interface ChatterConfig {
+interface ChatterConfig extends MindConfig {
   enabled: boolean; channels: string[]; chance_percent: number; min_messages: number; cooldown_minutes: number; max_per_hour: number;
   reply_on_mention: boolean; reply_to_message: boolean; use_ai: boolean; system_prompt: string; context_messages: number;
   temperature: number; max_tokens: number; phrases: string[]; fallback_to_phrases: boolean;
@@ -15,7 +16,7 @@ interface ChatterConfig {
   voice_rate: number; voice_pitch: number;
   listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean;
 }
-interface Status { ai_configured: boolean; key_hint: string | null; model: string; last_error: string | null }
+interface Status { ai_configured: boolean; key_hint: string | null; model: string; base_url: string; vision_model: string; last_error: string | null }
 interface TestResult { text: string | null; source: "ai" | "phrase"; error: string | null; context: string | null }
 
 const PROMPTS: { title: string; text: string }[] = [
@@ -312,7 +313,7 @@ export default function Chatter() {
       <div className="stack">
         <Card>
           <ToggleRow title="Болтовня включена" checked={d.enabled} onChange={(v) => set("enabled", v)} />
-          <ToggleRow title="Отвечать, когда бота упомянули" hint="@бот или ответ на его сообщение — бот ответит всегда (с учётом лимита в час)"
+          <ToggleRow title="Отвечать, когда бота упомянули" hint="@бот, ответ на его сообщение или слово-обращение — бот ответит и продолжит разговор (настройки в блоке «Разговор»)"
             checked={d.reply_on_mention} onChange={(v) => set("reply_on_mention", v)} />
           <ToggleRow title="Вмешиваться «ответом»" hint="Сообщение будет ответом на последнее сообщение в чате, а не отдельной репликой"
             checked={d.reply_to_message} onChange={(v) => set("reply_to_message", v)} />
@@ -326,11 +327,15 @@ export default function Chatter() {
             </Field>
             <Field label="Не раньше, чем через сообщений" hint="После прошлого вмешательства в этом канале"><NumberInput value={d.min_messages} min={1} max={500} onChange={(v) => set("min_messages", v)} /></Field>
             <Field label="Пауза в канале, мин"><NumberInput value={d.cooldown_minutes} min={0} max={1440} onChange={(v) => set("cooldown_minutes", v)} /></Field>
-            <Field label="Максимум сообщений в час" hint="На весь сервер, включая ответы на упоминания"><NumberInput value={d.max_per_hour} min={1} max={60} onChange={(v) => set("max_per_hour", v)} /></Field>
+            <Field label="Максимум вмешательств в час" hint="На весь сервер. Ответы в разговоре считаются отдельно"><NumberInput value={d.max_per_hour} min={1} max={60} onChange={(v) => set("max_per_hour", v)} /></Field>
           </div>
         </Card>
 
+        <DialogCard d={d} set={set} />
+
         <KeyCard status={status.data ?? null} onChange={status.reload} />
+
+        <ModelsCard status={status.data ?? null} onChange={status.reload} d={d} set={set} />
 
         <Card title="Промпт для DeepSeek" subtitle="Кто такой бот и как он пишет. Бот видит последние сообщения канала и пишет одну реплику.">
           <ToggleRow title="Придумывать реплики через DeepSeek" checked={d.use_ai} onChange={(v) => set("use_ai", v)} />
@@ -358,6 +363,16 @@ export default function Chatter() {
         <VoiceCard guildId={guildId!} d={d} set={set} />
 
         <ListenCard guildId={guildId!} d={d} set={set} />
+
+        <TriggersCard d={d} set={set} />
+
+        <MoveCard d={d} set={set} />
+
+        <MemoryCard guildId={guildId!} d={d} set={set} />
+
+        <GrudgeCard guildId={guildId!} d={d} set={set} />
+
+        <ConfidantsCard guildId={guildId!} d={d} set={set} />
 
         <Card title={`Фразы (${d.phrases.length})`} subtitle="Используются без ключа DeepSeek или когда он не отвечает. Одна фраза — одна строка.">
           <textarea className="textarea" rows={10} value={d.phrases.join("\n")}

@@ -13,7 +13,7 @@ export interface LevelingConfig {
   enabled: boolean; xp_min: number; xp_max: number; cooldown_seconds: number; min_message_length: number;
   ignore_duplicate_messages: boolean; xp_multiplier: number; formula_a: number; formula_b: number; formula_c: number;
   max_level: number; announce_mode: "current" | "channel" | "dm" | "off"; announce_channel_id: string | null;
-  levelup_message: string; no_xp_channels: string[]; no_xp_categories: string[]; no_xp_roles: string[];
+  levelup_message: string; reward_announce: boolean; reward_message: string; no_xp_channels: string[]; no_xp_categories: string[]; no_xp_roles: string[];
   stack_rewards: boolean; restore_rewards_on_rejoin: boolean; reset_on_leave: boolean; hide_left_members: boolean;
 }
 
@@ -29,11 +29,13 @@ export default function Leveling() {
   const c = useModuleConfig<LevelingConfig>(guildId!, "leveling");
   useUnsavedWarning(c.dirty);
   const preview = usePreview(guildId, c.draft?.levelup_message ?? "", null, { level: 5, xp: 1234, rank: 3 });
+  const rewardPreview = usePreview(guildId, c.draft?.reward_message ?? "", null, { level: 10, xp: 5000, rank: 3, role: "@Ветеран", role_name: "Ветеран" });
 
   if (c.error) return <ErrorBox error={c.error} onRetry={c.reload} />;
   if (!c.draft) return <Loading />;
   const d = c.draft;
   const vars = Object.fromEntries(Object.entries(meta.template_variables).filter(([k]) => LEVELUP_VARS.includes(k)));
+  const rewardVars = Object.fromEntries(Object.entries(meta.template_variables).filter(([k]) => [...LEVELUP_VARS, "role", "role_name"].includes(k)));
 
   const levels = Array.from({ length: 8 }, (_, i) => [1, 2, 3, 5, 10, 20, 30, 50][i]).filter((l) => l <= d.max_level);
   const totalFor = (lvl: number) => {
@@ -149,6 +151,16 @@ export default function Leveling() {
                 <TemplateInput value={d.levelup_message} vars={vars} onChange={(v) => c.update((x) => { x.levelup_message = v; })} />
               </Field>
               <div className="field"><span className="field-label">Предпросмотр</span><DiscordPreview data={preview.data} loading={preview.loading} /></div>
+            </div>
+          )}
+          <ToggleRow title="Отдельное сообщение за роль-награду" hint="Когда за новый уровень выдаётся роль, бот пишет ещё одно сообщение и упоминает участника (саму роль не пингует). Пишет туда же, куда уведомления об уровне; если они в ЛС или выключены — в канал, где участник получил уровень"
+            checked={d.reward_announce} onChange={(v) => c.update((x) => { x.reward_announce = v; })} />
+          {d.reward_announce && (
+            <div className="grid grid-2 mt">
+              <Field label="Текст сообщения о роли" hint="{role} — роль, {level} — уровень, за который она выдаётся">
+                <TemplateInput value={d.reward_message} vars={rewardVars} onChange={(v) => c.update((x) => { x.reward_message = v; })} />
+              </Field>
+              <div className="field"><span className="field-label">Предпросмотр</span><DiscordPreview data={rewardPreview.data} loading={rewardPreview.loading} /></div>
             </div>
           )}
         </Card>

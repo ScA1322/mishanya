@@ -46,15 +46,26 @@ def pick_phrase(phrases: list[str]) -> str | None:
 
 async def generate(*, api_key: str, base_url: str, model: str, system_prompt: str, history: str, channel: str,
                    bot_name: str, mentioned: bool, temperature: float, max_tokens: int,
-                   task: str | None = None) -> str:
+                   task: str | None = None, memory: list[str] | None = None, images: list[str] | None = None,
+                   raw: bool = False, context: str = "") -> str:
+    """Реплика модели. raw=True — вернуть ответ как есть (JSON с действиями), images — ссылки на картинки
+    (нужна модель со зрением), memory — что бот помнит, context — служебные сведения (люди, каналы)."""
     if not api_key:
         raise ChatterError("Ключ DeepSeek не задан")
     task = task or ("Тебя упомянули или ответили на твоё сообщение — ответь на последнее сообщение."
                     if mentioned else "Влезь в разговор: напиши одно своё сообщение по теме последних сообщений.")
-    user = f"Канал #{channel}. Последние сообщения (сверху старые):\n{history or '(сообщений нет)'}\n\n{task}"
+    if memory:
+        system_prompt += ("\n\nЧто ты помнишь о сервере и людях (узнал сам; используй к месту, не перечисляй):\n"
+                          + "\n".join(f"- {m}" for m in memory))
+    user = (f"{context}\n\n" if context else "") + \
+        f"Канал #{channel}. Последние сообщения (сверху старые):\n{history or '(сообщений нет)'}\n\n{task}"
+    content: str | list = user
+    if images:
+        content = [{"type": "text", "text": user + "\nК последнему сообщению приложены картинки — посмотри их."}]
+        content += [{"type": "image_url", "image_url": {"url": u}} for u in images[:4]]
     body = {
         "model": model,
-        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user}],
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}],
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
@@ -79,6 +90,10 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
         raise ChatterError("DeepSeek вернул ответ непонятного формата") from None
+    if raw:
+        if not text.strip():
+            raise ChatterError("DeepSeek вернул пустой ответ")
+        return text
     text = clean_reply(text, bot_name)
     if not text:
         raise ChatterError("DeepSeek вернул пустой ответ")

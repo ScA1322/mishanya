@@ -17,10 +17,10 @@ from ...services.chatter import ChatterError, format_history, generate, pick_phr
 from ...services.music import VOICE_MISSING, ffmpeg_executable, voice_available
 from ...services.tts import TtsError, ffmpeg_options, synthesize
 from ..client import MishanyaBot
+from .mind import image_urls, read_history
 from ..utils import UserFacingError, ok_embed, require_guild, respond
 
 log = logging.getLogger(__name__)
-MENTION_COOLDOWN = 8  # секунд между ответами на упоминания одному участнику
 
 
 class ChannelState:
@@ -34,7 +34,10 @@ class Chatter(commands.Cog):
         self.bot = bot
         self.app = bot.app
         self.channels: dict[int, ChannelState] = {}
-        self.hourly: dict[int, deque[float]] = {}
+        self.hourly: dict[object, deque[float]] = {}
+        self.dialog: dict[tuple[int, int], float] = {}  # (канал, человек) → до какого времени идёт разговор
+        self.locks: dict[int, asyncio.Lock] = {}
+        self.waiting: dict[int, int] = {}  # сколько ответов ждут очереди в канале
         self.mention_cd: dict[tuple[int, int], float] = {}
         self.busy: set[int] = set()  # каналы, где ответ уже готовится
         self.speaking: set[int] = set()  # серверы, где бот сейчас говорит в голосовом канале
@@ -56,6 +59,9 @@ class Chatter(commands.Cog):
         cfg = await self.app.config.get_typed(message.guild.id, "chatter", ChatterConfig)
         if not cfg.enabled or not isinstance(message.channel, (discord.TextChannel, discord.Thread)):
             return
+        mind = self.bot.get_cog("Mind")
+        if mind is not None and mind.is_apology_channel(cfg, message.channel.id):  # type: ignore[attr-defined]
+            return  # там бот разбирает извинения
         parent_id = getattr(message.channel, "parent_id", None)
         if cfg.channels and str(message.channel.id) not in cfg.channels and str(parent_id) not in cfg.channels:
             return
@@ -64,44 +70,101 @@ class Chatter(commands.Cog):
         state = self.channels.setdefault(message.channel.id, ChannelState())
         state.messages_since += 1
         now = time.monotonic()
+        if not message.channel.permissions_for(message.guild.me).send_messages:
+            return
 
-        mentioned = cfg.reply_on_mention and self._addressed(message)
-        if mentioned:
+        explicit = cfg.reply_on_mention and self._addressed(message, cfg)
+        in_dialog = cfg.reply_on_mention and self.dialog.get((message.channel.id, message.author.id), 0) > now
+        if explicit or in_dialog:
             key = (message.guild.id, message.author.id)
-            if now - self.mention_cd.get(key, 0) < MENTION_COOLDOWN:
+            if now - self.mention_cd.get(key, 0) < cfg.reply_cooldown_seconds:
+                return
+            if self.waiting.get(message.channel.id, 0) >= 2 or \
+                    not self._take_hourly(("dialog", message.guild.id), cfg.dialog_max_per_hour, now):
                 return
             self.mention_cd[key] = now
-        else:
-            if state.messages_since < cfg.min_messages or now - state.last_at < cfg.cooldown_minutes * 60:
-                return
-            if random.random() * 100 >= cfg.chance_percent:
-                return
-        if message.channel.id in self.busy or not self._take_hourly(message.guild.id, cfg.max_per_hour, now):
+            state.messages_since, state.last_at = 0, now
+            self._background(self._answer(message, cfg, explicit))
             return
-        perms = message.channel.permissions_for(message.guild.me)
-        if not perms.send_messages:
+        if state.messages_since < cfg.min_messages or now - state.last_at < cfg.cooldown_minutes * 60:
+            return
+        if random.random() * 100 >= cfg.chance_percent:
+            return
+        if message.channel.id in self.busy or not self._take_hourly(message.guild.id, cfg.max_per_hour, now):
             return
         state.messages_since, state.last_at = 0, now
         self.busy.add(message.channel.id)
-        self._background(self._speak(message, cfg, mentioned))
+        self._background(self._speak(message, cfg, False))
 
-    def _addressed(self, message: discord.Message) -> bool:
+    def _addressed(self, message: discord.Message, cfg: ChatterConfig) -> bool:
         me = self.bot.user
         if me is None:
             return False
         if me in message.mentions:
             return True
         ref = message.reference.resolved if message.reference else None
-        return isinstance(ref, discord.Message) and ref.author.id == me.id
+        if isinstance(ref, discord.Message) and ref.author.id == me.id:
+            return True
+        if cfg.wake_words_in_text:
+            low = message.content.lower()
+            return any(w in low for w in cfg.listen_wake_words)
+        return False
 
-    def _take_hourly(self, guild_id: int, limit: int, now: float) -> bool:
-        q = self.hourly.setdefault(guild_id, deque())
+    def _take_hourly(self, key: object, limit: int, now: float) -> bool:
+        q = self.hourly.setdefault(key, deque())
         while q and now - q[0] > 3600:
             q.popleft()
         if len(q) >= limit:
             return False
         q.append(now)
         return True
+
+    async def _answer(self, message: discord.Message, cfg: ChatterConfig, explicit: bool) -> None:
+        """Ответ в разговоре: с памятью, картинками и действиями (обиды, перемещение). В канале — по очереди."""
+        channel = message.channel
+        lock = self.locks.setdefault(channel.id, asyncio.Lock())
+        self.waiting[channel.id] = self.waiting.get(channel.id, 0) + 1
+        try:
+            async with lock:
+                text, notes = await self.think(message, cfg, explicit)
+                if not text and not notes:
+                    return
+                body = "\n".join(t for t in [text, *notes] if t)[:2000]
+                await message.reply(body, mention_author=False,
+                                    allowed_mentions=discord.AllowedMentions(users=[message.author]) if notes
+                                    else discord.AllowedMentions.none())
+                if text:
+                    self.dialog[(channel.id, message.author.id)] = time.monotonic() + cfg.dialog_seconds
+        except discord.HTTPException as exc:
+            log.warning("Болтовня: не удалось ответить в #%s: %s", getattr(channel, "name", "?"), exc)
+        except Exception:  # noqa: BLE001
+            log.exception("Болтовня: ошибка ответа")
+        finally:
+            self.waiting[channel.id] -= 1
+
+    async def think(self, message: discord.Message, cfg: ChatterConfig,
+                    explicit: bool) -> tuple[str | None, list[str]]:
+        """Что ответить человеку, который говорит с ботом. Возвращает (реплика, заметки о сделанном)."""
+        s = self.app.settings
+        mind = self.bot.get_cog("Mind")
+        channel = message.channel
+        if cfg.use_ai and s.deepseek_api_key and mind is not None:
+            me = channel.guild.me.display_name  # type: ignore[union-attr]
+            history = await read_history(channel, cfg.context_messages, self.bot.user.id)  # type: ignore[union-attr]
+            task = ("Последнее сообщение обращено к тебе — ответь на него." if explicit else
+                    "Ты только что разговаривал с автором последнего сообщения. Если оно продолжает разговор с тобой — "
+                    "ответь; если он явно говорит не с тобой — оставь reply пустым.")
+            task += " Это живой диалог: отвечай по сути и не повторяйся; если просят подробнее — можно длиннее."
+            try:
+                async with channel.typing():
+                    return await mind.brain(channel.guild, message.author, cfg,  # type: ignore[attr-defined]
+                                            history=format_history(history, me), channel_name=channel.name,
+                                            task=task, images=image_urls(message))
+            except ChatterError as exc:
+                log.warning("Болтовня: %s", exc)
+                if not (explicit and cfg.fallback_to_phrases):
+                    return None, []
+        return (pick_phrase(cfg.phrases) if explicit else None), []
 
     async def _speak(self, message: discord.Message, cfg: ChatterConfig, mentioned: bool) -> None:
         channel = message.channel
@@ -126,18 +189,16 @@ class Chatter(commands.Cog):
         """Придумывает реплику: DeepSeek по последним сообщениям или запасная фраза."""
         s = self.app.settings
         if cfg.use_ai and s.deepseek_api_key:
-            history: list[tuple[str, str, bool]] = []
-            if channel.permissions_for(channel.guild.me).read_message_history:
-                async for m in channel.history(limit=cfg.context_messages):
-                    history.append((m.author.display_name, m.clean_content, m.author.id == self.bot.user.id))  # type: ignore[union-attr]
-                history.reverse()
+            history = await read_history(channel, cfg.context_messages, self.bot.user.id)  # type: ignore[union-attr]
             me = channel.guild.me.display_name
+            memory = await self.app.mind.recall(channel.guild.id, []) if cfg.memory_enabled else None
             try:
                 async with channel.typing():
                     return await generate(api_key=s.deepseek_api_key, base_url=s.deepseek_base_url,
                                           model=s.deepseek_model, system_prompt=cfg.system_prompt,
                                           history=format_history(history, me), channel=channel.name, bot_name=me,
-                                          mentioned=mentioned, temperature=cfg.temperature, max_tokens=cfg.max_tokens)
+                                          mentioned=mentioned, temperature=cfg.temperature, max_tokens=cfg.max_tokens,
+                                          memory=memory)
             except ChatterError as exc:
                 log.warning("Болтовня: %s", exc)
                 self.app.chatter_error = str(exc)

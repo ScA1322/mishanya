@@ -338,9 +338,11 @@ SAMPLE_CHAT = [("Вася", "кто сегодня в доту?", False), ("Пе
 
 
 def _chatter_status(app) -> dict:  # noqa: ANN001
-    key = app.settings.deepseek_api_key
+    s = app.settings
+    key = s.deepseek_api_key
     return {"ai_configured": bool(key), "key_hint": f"…{key[-4:]}" if len(key) >= 8 else None,
-            "model": app.settings.deepseek_model, "last_error": app.chatter_error}
+            "model": s.deepseek_model, "base_url": s.deepseek_base_url, "vision_model": s.vision_model,
+            "last_error": app.chatter_error}
 
 
 @router.get("/chatter/status")
@@ -588,3 +590,82 @@ async def tempvoice_create_hub(body: CreateHubIn, request: Request, guild_id: in
     new.hubs.append(VoiceHub(channel_id=str(channel.id), category_id=body.category_id))
     await app.config.set(guild_id, "tempvoice", new)
     return {"channel_id": str(channel.id), "name": channel.name, "config": new.model_dump(mode="json")}
+
+
+# ---------------------------------------------------------------- «разум»: память, обиды, доверенные
+
+def _member_info(dg, user_id: int | None) -> dict | None:  # noqa: ANN001
+    if user_id is None:
+        return None
+    m = dg.get_member(user_id) if dg else None
+    return {"id": str(user_id), "name": m.display_name if m else f"участник {user_id}",
+            "avatar_url": m.display_avatar.url if m else None}
+
+
+@router.get("/mind")
+async def mind_overview(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    app = get_app(request)
+    dg = discord_guild(app, guild_id)
+    cfg = await app.config.get_typed(guild_id, "chatter", ChatterConfig)
+    memories = await app.mind.memories(guild_id, limit=2000)
+    grudges = await app.mind.grudges(guild_id)
+    return {
+        "memories": [{"id": m.id, "text": m.text, "user": _member_info(dg, m.user_id), "created_at": iso(m.created_at)}
+                     for m in memories],
+        "grudges": [{"user": _member_info(dg, g.user_id), "roles": g.role_ids, "reason": g.reason,
+                     "created_at": iso(g.created_at)} for g in grudges],
+        "inactive": [{"user": _member_info(dg, r.user_id), "last_seen": iso(r.last_seen)}
+                     for r in await app.mind.inactive(guild_id, cfg.report_inactive_days or 7)
+                     if dg is None or dg.get_member(r.user_id) is not None][:50],
+        "vision_model": app.settings.vision_model,
+    }
+
+
+@router.delete("/mind/memories/{memory_id}")
+async def mind_forget(request: Request, memory_id: int, guild_id: int = Depends(guild_id_dep)) -> dict:
+    n = await get_app(request).mind.forget(guild_id, memory_id)
+    if not n:
+        raise HTTPException(404, "Запись не найдена")
+    return {"ok": True}
+
+
+@router.delete("/mind/memories")
+async def mind_forget_all(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    return {"removed": await get_app(request).mind.forget(guild_id)}
+
+
+@router.post("/mind/learn")
+async def mind_learn(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Заставляет бота прямо сейчас «обдумать» свежие сообщения и пополнить память."""
+    app = get_app(request)
+    cog = _bot_cog(request, "Mind")
+    dg = discord_guild(app, guild_id)
+    cfg = await app.config.get_typed(guild_id, "chatter", ChatterConfig)
+    if not app.settings.deepseek_api_key:
+        raise HTTPException(400, "Нужен ключ ИИ — без него бот не может ничего запоминать")
+    try:
+        added = await cog.learn(dg, cfg)
+    except ChatterError as exc:
+        raise HTTPException(502, str(exc)) from None
+    cog.unlearned[guild_id] = 0
+    return {"added": added}
+
+
+@router.post("/mind/forgive/{user_id}")
+async def mind_forgive(request: Request, user_id: int, guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Снять обиду вручную: вернуть роли и снять мут."""
+    app = get_app(request)
+    dg = discord_guild(app, guild_id)
+    grudge = await app.mind.grudge(guild_id, user_id)
+    if grudge is None:
+        raise HTTPException(404, "Обиды на этого участника нет")
+    cog = app.bot.get_cog("Mind") if app.bot is not None else None
+    if dg is None or cog is None:
+        await app.mind.drop_grudge(guild_id, user_id)
+        return {"restored": 0}
+    restored = await _discord_call(cog.forgive(dg, user_id))  # type: ignore[union-attr]
+    cfg = await app.config.get_typed(guild_id, "chatter", ChatterConfig)
+    who = _member_info(dg, user_id)["name"]  # type: ignore[index]
+    await cog.notify(dg, cfg, f"🕊️ Простил **{who}** («{dg.name}») по приказу из панели. "  # type: ignore[union-attr]
+                              f"Обижался за: {grudge.reason or '?'}.")
+    return {"restored": restored}

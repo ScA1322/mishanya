@@ -270,3 +270,35 @@ class TempVoiceChannel(Base):
     owner_id: Mapped[int] = mapped_column(BigInteger)
     hub_id: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BotMemory(Base):
+    """Факт, который бот сам запомнил о сервере или участнике (его «саморазвитие»)."""
+
+    __tablename__ = "bot_memory"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), index=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    text: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BotGrudge(Base):
+    """Обида бота: у участника сняты роли, пока он не извинится."""
+
+    __tablename__ = "bot_grudges"
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    role_ids: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VoiceSeen(Base):
+    """Когда участник последний раз был в голосовом канале (для докладов «давно не заходит»)."""
+
+    __tablename__ = "voice_seen"
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

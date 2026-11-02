@@ -37,6 +37,7 @@ COGS = [
     "mishanya.bot.cogs.music",
     "mishanya.bot.cogs.tempvoice",
     "mishanya.bot.cogs.posts",
+    "mishanya.bot.cogs.mind",
     "mishanya.bot.cogs.chatter",
     "mishanya.bot.cogs.listener",
 ]
@@ -248,7 +249,17 @@ class MishanyaBot(commands.Bot):
 
     async def on_message(self, message: discord.Message) -> None:
         """Единая точка обработки сообщений: автомодерация → пользовательские команды → XP."""
-        if message.author.bot or message.guild is None or not isinstance(message.author, discord.Member):
+        if message.author.bot:
+            return
+        if message.guild is None:  # личка: переписка с доверенными людьми
+            mind = self.get_cog("Mind")
+            if mind is not None:
+                try:
+                    await mind.handle_dm(message)  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    log.exception("Ошибка обработки личного сообщения")
+            return
+        if not isinstance(message.author, discord.Member):
             return
         automod = self.get_cog("Automod")
         if automod is not None:
@@ -257,7 +268,7 @@ class MishanyaBot(commands.Bot):
                     return
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка автомодерации")
-        for cog_name in ("CustomCommands", "Leveling", "Chatter"):
+        for cog_name in ("CustomCommands", "Leveling", "Mind", "Chatter"):
             cog = self.get_cog(cog_name)
             if cog is None:
                 continue

@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, ButtonMenu, Post, TempVoiceChannel, Ticket
+from .models import Base, BotGrudge, BotMemory, ButtonMenu, Post, TempVoiceChannel, Ticket, VoiceSeen
 
 log = logging.getLogger(__name__)
 
@@ -37,11 +37,17 @@ def _m4_posts(conn: Connection) -> None:
     Base.metadata.create_all(conn, tables=[Post.__table__])
 
 
+def _m5_mind(conn: Connection) -> None:
+    Base.metadata.create_all(conn, tables=[BotMemory.__table__, BotGrudge.__table__, VoiceSeen.__table__])
+    # Поля новых настроек появляются сами (значения по умолчанию), менять таблицы конфигурации не нужно.
+
+
 MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _m1_initial),
     (2, _m2_tickets_menus),
     (3, _m3_temp_voice),
     (4, _m4_posts),
+    (5, _m5_mind),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

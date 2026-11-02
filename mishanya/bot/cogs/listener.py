@@ -251,18 +251,24 @@ class Listener(commands.Cog):
         addressed = any(w in low for w in cfg.listen_wake_words) or now < session.open_until
         session.recent.append((time.time(), name, text, addressed))
         session.dialog.append((name, text))
+        mind = self.bot.get_cog("Mind")
+        if mind is not None:
+            mind.heard_speech(guild, session.vc.channel, user_id, name, text)  # type: ignore[attr-defined]
+            for game in await mind.check_triggers(guild, text, cfg):  # type: ignore[attr-defined]
+                session.recent.append((time.time(), "▶", f"запустил {game}", False))
         if addressed:
             log.info("Слушание: обращение от %s: %s", name, text[:200])
             session.open_until = now + cfg.listen_followup_seconds
             if not session.replying:
                 session.replying = True
                 try:
-                    await self._reply(guild, session, cfg)
+                    await self._reply(guild, session, cfg, member)
                 finally:
                     session.replying = False
                     session.open_until = time.monotonic() + cfg.listen_followup_seconds
 
-    async def _reply(self, guild: discord.Guild, session: Session, cfg: ChatterConfig) -> None:
+    async def _reply(self, guild: discord.Guild, session: Session, cfg: ChatterConfig,
+                     member: discord.Member | None = None) -> None:
         vc = session.vc
         if not vc.is_connected() or vc.is_playing():
             return  # играет музыка — не перебиваем
@@ -276,11 +282,20 @@ class Listener(commands.Cog):
                     "расшифровка речи, в ней бывают ошибки распознавания. Последняя реплика обращена к тебе. Ответь вслух "
                     "1–2 короткими фразами (до 200 символов) — ответ будет озвучен голосом, поэтому без смайликов, "
                     "разметки и ссылок.")
+            mind = self.bot.get_cog("Mind")
             try:
-                text = await generate(api_key=s.deepseek_api_key, base_url=s.deepseek_base_url, model=s.deepseek_model,
-                                      system_prompt=cfg.system_prompt, history=dialog, channel=vc.channel.name,
-                                      bot_name=me, mentioned=True, temperature=cfg.temperature,
-                                      max_tokens=cfg.max_tokens, task=task)
+                if mind is not None:  # с памятью и действиями: обиды, «перекинь меня в …»
+                    text, notes = await mind.brain(guild, member, cfg, history=dialog,  # type: ignore[attr-defined]
+                                                   channel_name=vc.channel.name, task=task, voice=True)
+                    for note in notes:
+                        session.recent.append((time.time(), "⚙", note, False))
+                    if not text and notes:
+                        text = "Сделано."
+                else:
+                    text = await generate(api_key=s.deepseek_api_key, base_url=s.deepseek_base_url,
+                                          model=s.deepseek_model, system_prompt=cfg.system_prompt, history=dialog,
+                                          channel=vc.channel.name, bot_name=me, mentioned=True,
+                                          temperature=cfg.temperature, max_tokens=cfg.max_tokens, task=task)
             except ChatterError as exc:
                 log.warning("Слушание: %s", exc)
                 self.app.chatter_error = str(exc)
