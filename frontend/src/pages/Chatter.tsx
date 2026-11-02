@@ -260,6 +260,12 @@ function ListenCard({ guildId, d, set }: {
         <Field label="Не распознавать фразы короче, сек" hint="Отсекает кашель и «ага» — экономит деньги"><NumberInput value={d.listen_min_seconds} min={0.2} max={5} step={0.1} onChange={(v) => set("listen_min_seconds", v)} /></Field>
         <Field label="Выйти через, минут"><NumberInput value={d.listen_max_minutes} min={5} max={600} onChange={(v) => set("listen_max_minutes", v)} /></Field>
       </div>
+      <div className="grid grid-2 mt">
+        <Field label={`Влезать в разговор без обращения: ${d.listen_interject_percent}%`} hint="Шанс после каждой реплики людей. 0 — только когда к нему обращаются">
+          <input type="range" min={0} max={100} step={5} value={d.listen_interject_percent} onChange={(e) => set("listen_interject_percent", Number(e.target.value))} />
+        </Field>
+        <Field label="Влезать не чаще, чем раз в, сек"><NumberInput value={d.listen_interject_seconds} min={10} max={3600} onChange={(v) => set("listen_interject_seconds", v)} /></Field>
+      </div>
       <ToggleRow title="Самому садиться слушать" hint="Если бот не в голосе, он сам зайдёт в канал, где больше всего людей (с учётом списка каналов и минимума людей выше)"
         checked={d.listen_auto} onChange={(v) => set("listen_auto", v)} />
 

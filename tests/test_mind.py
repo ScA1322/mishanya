@@ -16,13 +16,14 @@ GID = 111111111111111111
 
 def test_parse_actions():
     raw = '```json\n{"reply": "ну ты и дерзкий", "offense": 2, "offense_reason": "назвал тупым", ' \
-          '"move": [{"who": "я", "to": "Курилка"}]}\n```'
+          '"mute_minutes": 25, "move": [{"who": "я", "to": "Курилка"}]}\n```'
     a = parse_actions(raw)
-    assert a == {"reply": "ну ты и дерзкий", "offense": 2, "offense_reason": "назвал тупым",
+    assert a == {"reply": "ну ты и дерзкий", "offense": 2, "offense_reason": "назвал тупым", "mute_minutes": 25,
                  "move": [{"who": "я", "to": "Курилка"}]}
     assert parse_actions("просто текст")["reply"] == "просто текст"
     assert parse_actions('{"reply": "x", "offense": 99, "move": {"who": "Вася", "to": "AFK"}}')["offense"] == 3
     assert parse_json("мусор") is None
+    assert parse_actions('{"reply": "x", "offense": 1, "mute_minutes": "много"}')["mute_minutes"] is None
 
 
 def test_triggers_and_names():
@@ -202,3 +203,17 @@ async def test_mind_api(authed, app):
     assert "VISION_MODEL=gpt-4o-mini" in app.settings.env_path.read_text(encoding="utf-8")
     cfg = (await authed.get(f"/api/guilds/{GID}/config/chatter")).json()
     assert cfg["voice_triggers"][0]["steam_app_id"] == 376210 and cfg["dm_open"] is True
+
+
+async def test_read_history_in_dm():
+    """В личке у канала guild = None — раньше на этом падал ответ в ЛС."""
+    from mishanya.bot.cogs.mind import read_history
+
+    class Dm:
+        guild = None
+
+        async def history(self, limit):  # noqa: ARG002
+            yield SimpleNamespace(author=SimpleNamespace(display_name="Вася", id=5), clean_content="привет",
+                                  attachments=[])
+
+    assert await read_history(Dm(), 5, 1) == [("Вася", "привет", False)]

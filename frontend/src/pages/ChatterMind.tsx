@@ -14,7 +14,7 @@ export interface MindConfig {
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
   report_inactive_days: number; gossip_hours: number;
   voice_triggers: VoiceTrigger[]; trigger_cooldown_minutes: number;
-  listen_wake_words: string[];
+  listen_wake_words: string[]; listen_interject_percent: number; listen_interject_seconds: number;
 }
 type Setter<C> = <K extends keyof C>(k: K, v: C[K]) => void;
 
@@ -134,7 +134,7 @@ export function GrudgeCard<C extends MindConfig>({ guildId, d, set }: { guildId:
             {LEVELS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
           </select>
         </Field>
-        <Field label="Мут, минут" hint="0 — без мута. В муте нельзя писать даже в канал извинений, извиниться можно после"><NumberInput value={d.punish_mute_minutes} min={0} max={1440} onChange={(v) => set("punish_mute_minutes", v)} /></Field>
+        <Field label="Мут — не больше, минут" hint="Срок бот выбирает сам по тяжести обиды: за подкол пару минут, за травлю часы. 0 — без мута. В муте нельзя писать даже в канал извинений"><NumberInput value={d.punish_mute_minutes} min={0} max={40320} onChange={(v) => set("punish_mute_minutes", v)} /></Field>
         <Field label="Канал для извинений" hint="Должен быть виден всем — ролей у наказанного не будет" error={d.punish_enabled && !d.apology_channel_id ? "Без канала извиниться будет негде" : undefined}>
           <ChannelSelect value={d.apology_channel_id} onChange={(v) => set("apology_channel_id", v)} />
         </Field>

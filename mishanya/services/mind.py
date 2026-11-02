@@ -39,28 +39,34 @@ def parse_actions(raw: str) -> dict:
     """Ответ «мозга»: {"reply": str, "offense": 0..3, "move": [{"who", "to"}]}. Не-JSON — это просто реплика."""
     data = parse_json(raw)
     if data is None:
-        return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "move": []}
+        return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "move": []}
     try:
         offense = max(0, min(3, int(data.get("offense") or 0)))
     except (TypeError, ValueError):
         offense = 0
+    try:
+        mute = max(1, min(40320, int(data.get("mute_minutes")))) if data.get("mute_minutes") else None
+    except (TypeError, ValueError):
+        mute = None
     moves = data.get("move") or []
     if isinstance(moves, dict):
         moves = [moves]
     moves = [{"who": str(m.get("who", "")).strip()[:100], "to": str(m.get("to", "")).strip()[:100]}
              for m in moves if isinstance(m, dict) and m.get("who") and m.get("to")][:10]
     return {"reply": str(data.get("reply") or "").strip(), "offense": offense,
-            "offense_reason": str(data.get("offense_reason") or "").strip()[:200], "move": moves}
+            "offense_reason": str(data.get("offense_reason") or "").strip()[:200], "mute_minutes": mute,
+            "move": moves}
 
 
 ACTIONS_FORMAT = (
     "Ответь СТРОГО одним JSON-объектом без текста вокруг:\n"
     '{"reply": "твой ответ (пустая строка, если последнее сообщение явно не тебе и встревать незачем)", '
-    '"offense": 0, "offense_reason": "", "move": []}\n'
+    '"offense": 0, "offense_reason": "", "mute_minutes": 0, "move": []}\n'
     "offense — насколько последнее сообщение издевается над тобой или оскорбляет ТЕБЯ лично: 0 — нормально или "
     "обычный дружеский мат, 1 — подкол или стёб, 2 — настоящее оскорбление или унижение, 3 — жёсткая травля. "
     "Оскорбления других людей, мат в воздух и шутки не про тебя — это 0. offense_reason — если offense > 0, "
-    "коротко, за что обиделся (например «назвал тупым ботом»).\n"
+    "коротко, за что обиделся (например «назвал тупым ботом»). mute_minutes — если offense > 0, сам реши, на "
+    "сколько минут замутить: за мелкий подкол пара минут, за оскорбление 10–30, за травлю часы.\n"
     'move — только если автор последнего сообщения прямо просит перекинуть кого-то в другой голосовой канал: '
     '[{"who": "имя участника или «я», если просит перекинуть себя", "to": "название голосового канала"}]. '
     "Иначе пустой список. Не выдумывай каналы — бери из списка голосовых каналов."

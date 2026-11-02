@@ -10,6 +10,7 @@ import asyncio
 import io
 import logging
 import random
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -101,6 +102,8 @@ class Session:
     open_until: float = 0.0  # до этого момента отвечаем без слова-обращения
     alone_since: float | None = None
     replying: bool = False
+    last_spoke: float = 0.0  # когда бот последний раз говорил
+    heard_since: int = 0  # реплик людей с тех пор
     task: asyncio.Task | None = None
     error: str | None = None
 
@@ -164,7 +167,8 @@ class Listener(commands.Cog):
                 vc = await channel.connect(cls=voice_recv.VoiceRecvClient, timeout=20, self_deaf=False)
             except asyncio.TimeoutError:
                 raise UserFacingError("Не удалось зайти в голосовой канал: Discord не ответил за 20 секунд.") from None
-        session = Session(vc=vc, channel_id=channel.id, started=time.monotonic(), collector=UtteranceCollector())
+        session = Session(vc=vc, channel_id=channel.id, started=time.monotonic(),
+                          collector=UtteranceCollector(end_silence=0.6))
         vc.listen(CollectorSink(session.collector))  # type: ignore[attr-defined]
         install_dave_decrypt(vc)
         self.sessions[guild.id] = session
@@ -235,6 +239,7 @@ class Listener(commands.Cog):
         member = guild.get_member(user_id)
         name = member.display_name if member else f"участник {user_id}"
         s = self.app.settings
+        t0 = time.monotonic()
         try:
             async with self.stt_sem:
                 wav = await asyncio.to_thread(pcm_to_wav, pcm)
@@ -251,27 +256,35 @@ class Listener(commands.Cog):
         addressed = any(w in low for w in cfg.listen_wake_words) or now < session.open_until
         session.recent.append((time.time(), name, text, addressed))
         session.dialog.append((name, text))
+        session.heard_since += 1
+        log.debug("Слушание: распознано за %.1f с: %s", time.monotonic() - t0, text[:100])
         mind = self.bot.get_cog("Mind")
         if mind is not None:
             mind.heard_speech(guild, session.vc.channel, user_id, name, text)  # type: ignore[attr-defined]
             for game in await mind.check_triggers(guild, text, cfg):  # type: ignore[attr-defined]
                 session.recent.append((time.time(), "▶", f"запустил {game}", False))
-        if addressed:
-            log.info("Слушание: обращение от %s: %s", name, text[:200])
-            session.open_until = now + cfg.listen_followup_seconds
-            if not session.replying:
-                session.replying = True
-                try:
-                    await self._reply(guild, session, cfg, member)
-                finally:
-                    session.replying = False
-                    session.open_until = time.monotonic() + cfg.listen_followup_seconds
+        interject = (not addressed and session.heard_since >= 2 and cfg.listen_interject_percent > 0
+                     and now - session.last_spoke >= cfg.listen_interject_seconds
+                     and random.random() * 100 < cfg.listen_interject_percent)
+        if (addressed or interject) and not session.replying:
+            if addressed:
+                log.info("Слушание: обращение от %s: %s", name, text[:200])
+            session.replying = True
+            try:
+                spoke = await self._reply(guild, session, cfg, member, interject=not addressed)
+            finally:
+                session.replying = False
+            if spoke:
+                session.last_spoke, session.heard_since = time.monotonic(), 0
+                session.open_until = time.monotonic() + cfg.listen_followup_seconds
 
     async def _reply(self, guild: discord.Guild, session: Session, cfg: ChatterConfig,
-                     member: discord.Member | None = None) -> None:
+                     member: discord.Member | None = None, interject: bool = False) -> bool:
+        """Отвечает голосом. Возвращает, сказал ли что-нибудь."""
         vc = session.vc
         if not vc.is_connected() or vc.is_playing():
-            return  # играет музыка — не перебиваем
+            return False  # играет музыка — не перебиваем
+        t0 = time.monotonic()
         s = self.app.settings
         me = guild.me.display_name
         text: str | None = None
@@ -279,9 +292,12 @@ class Listener(commands.Cog):
             dialog = "\n".join(f"{n}: {t}" for n, t in session.dialog)
             people = ", ".join(m.display_name for m in vc.channel.members if not m.bot)
             task = (f"Ты сидишь в голосовом канале «{vc.channel.name}» (там: {people}) и слышишь разговор — это "
-                    "расшифровка речи, в ней бывают ошибки распознавания. Последняя реплика обращена к тебе. Ответь вслух "
-                    "1–2 короткими фразами (до 200 символов) — ответ будет озвучен голосом, поэтому без смайликов, "
-                    "разметки и ссылок.")
+                    "расшифровка речи, в ней бывают ошибки распознавания. "
+                    + ("К тебе никто не обращался — влезь в разговор своей репликой по теме, если есть что сказать "
+                       "смешного или дерзкого; если сказать нечего — оставь reply пустым. " if interject else
+                       "Последняя реплика обращена к тебе — ответь на неё. ")
+                    + "Говори вслух 1–2 короткими фразами (до 200 символов) — ответ озвучивается голосом, поэтому "
+                    "без смайликов, разметки и ссылок.")
             mind = self.bot.get_cog("Mind")
             try:
                 if mind is not None:  # с памятью и действиями: обиды, «перекинь меня в …»
@@ -299,30 +315,45 @@ class Listener(commands.Cog):
             except ChatterError as exc:
                 log.warning("Слушание: %s", exc)
                 self.app.chatter_error = str(exc)
-                if not cfg.fallback_to_phrases:
-                    return
-        text = text or pick_phrase(cfg.phrases)
+                if interject or not cfg.fallback_to_phrases:
+                    return False
+        if not text and not interject:
+            text = pick_phrase(cfg.phrases)
         if not text:
-            return
-        try:
-            data, engine = await synthesize(text, cfg.voice_name, cfg.voice_rate, cfg.voice_pitch, cfg.voice_engine)
-        except TtsError as exc:
-            log.warning("Слушание: %s", exc)
-            return
-        if not vc.is_connected() or vc.is_playing():
-            return
+            return False
+        t_ai = time.monotonic()
+        # Озвучиваем фразы параллельно и начинаем говорить, как только готова первая.
+        parts = [p for p in re.split(r"(?<=[.!?…])\s+", text) if p.strip()] or [text]
+        jobs = [asyncio.create_task(synthesize(p, cfg.voice_name, cfg.voice_rate, cfg.voice_pitch, cfg.voice_engine))
+                for p in parts[:4]]
         session.dialog.append((me, text))
         session.recent.append((time.time(), me, text, False))
-        done = asyncio.Event()
         loop = asyncio.get_running_loop()
-        opts = ffmpeg_options(engine, cfg.voice_rate)
-        source = await asyncio.to_thread(lambda: discord.FFmpegPCMAudio(
-            io.BytesIO(data), pipe=True, executable=ffmpeg_executable(), options=opts))
-        vc.play(source, after=lambda _e: loop.call_soon_threadsafe(done.set))
-        try:
-            await asyncio.wait_for(done.wait(), 60)
-        except asyncio.TimeoutError:
-            vc.stop()
+        spoke = False
+        for i, job in enumerate(jobs):
+            try:
+                data, engine = await job
+            except TtsError as exc:
+                log.warning("Слушание: %s", exc)
+                continue
+            if i == 0:
+                log.info("Слушание: ответ за %.1f с (ИИ %.1f с, озвучка %.1f с)", time.monotonic() - t0,
+                         t_ai - t0, time.monotonic() - t_ai)
+            if not vc.is_connected() or (vc.is_playing() and not spoke):
+                break
+            done = asyncio.Event()
+            opts = ffmpeg_options(engine, cfg.voice_rate)
+            source = await asyncio.to_thread(lambda d=data, o=opts: discord.FFmpegPCMAudio(
+                io.BytesIO(d), pipe=True, executable=ffmpeg_executable(), options=o))
+            vc.play(source, after=lambda _e: loop.call_soon_threadsafe(done.set))
+            spoke = True
+            try:
+                await asyncio.wait_for(done.wait(), 60)
+            except asyncio.TimeoutError:
+                vc.stop()
+        for job in jobs:
+            job.cancel()
+        return spoke
 
     # ------------------------------------------------------------ автоматически и из Discord
 

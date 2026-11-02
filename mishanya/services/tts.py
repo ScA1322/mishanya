@@ -10,12 +10,16 @@ import asyncio
 import io
 import logging
 import re
+import time
 
 log = logging.getLogger(__name__)
 
 VOICES = {"dmitry": "ru-RU-DmitryNeural", "svetlana": "ru-RU-SvetlanaNeural"}
 MAX_SPEECH = 400  # символов в одной фразе
-EDGE_ATTEMPTS = 3
+EDGE_ATTEMPTS = 2
+EDGE_TIMEOUT = 6  # секунд на попытку — дольше ждать нет смысла, лучше сразу Google
+EDGE_COOLDOWN = 180  # после сбоя Microsoft столько секунд сразу озвучиваем через Google
+_edge_failed_at = 0.0
 
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
 
@@ -45,14 +49,18 @@ async def _edge(text: str, voice: str, rate: int, pitch: int) -> bytes:
             com = edge_tts.Communicate(text, VOICES.get(voice, VOICES["dmitry"]), rate=f"{rate:+d}%",
                                        pitch=f"{pitch:+d}Hz")
             data = bytearray()
-            async for chunk in com.stream():
-                if chunk["type"] == "audio":
-                    data += chunk["data"]
+
+            async def collect() -> None:
+                async for chunk in com.stream():
+                    if chunk["type"] == "audio":
+                        data.extend(chunk["data"])
+
+            await asyncio.wait_for(collect(), EDGE_TIMEOUT)
             if data:
                 return bytes(data)
         except Exception as exc:  # noqa: BLE001 — NoAudioReceived, сеть и т. п.
             last = exc
-        await asyncio.sleep(0.4 + 0.4 * attempt)
+        await asyncio.sleep(0.3)
     raise TtsError(f"Microsoft не озвучил ({type(last).__name__ if last else 'пустой звук'})")
 
 
@@ -75,11 +83,14 @@ async def synthesize(text: str, voice: str = "dmitry", rate: int = 0, pitch: int
     text = speech_text(text)
     if not text:
         raise TtsError("Нечего озвучивать")
+    global _edge_failed_at
     errors = []
-    if engine in ("auto", "edge"):
+    edge_down = engine == "auto" and time.monotonic() - _edge_failed_at < EDGE_COOLDOWN
+    if engine in ("auto", "edge") and not edge_down:
         try:
             return await _edge(text, voice, rate, pitch), "edge"
         except TtsError as exc:
+            _edge_failed_at = time.monotonic()
             errors.append(str(exc))
     if engine in ("auto", "google"):
         try:

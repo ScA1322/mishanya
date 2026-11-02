@@ -31,7 +31,15 @@ LEARN_IDLE_SECONDS = 1800  # или прошло столько времени �
 APOLOGY_RE = re.compile(r"извин|прост[иь]|прощени|сорр?и|сорян|каюсь|прошу пощад", re.I)
 ADMIT_RE = re.compile(r"винова|был неправ|была неправ|не прав|моя вина|я зря|зря я|перегнул|погорячил|признаю|"
                       r"не должен был|не стоило", re.I)
+DEFAULT_MUTE = {1: 5, 2: 15, 3: 60}  # минут, если модель сама не назвала срок
 SELF_WORDS = {"я", "меня", "мне", "себя", "сам", "самого"}
+
+
+def fmt_minutes(m: int) -> str:
+    if m < 60:
+        return f"{m} мин"
+    h, rest = divmod(m, 60)
+    return f"{h} ч" + (f" {rest} мин" if rest else "")
 
 
 @dataclass
@@ -61,8 +69,8 @@ def message_line(m: discord.Message) -> str:
 
 async def read_history(channel: discord.abc.Messageable, limit: int, bot_id: int) -> list[tuple[str, str, bool]]:
     """Последние сообщения канала (старые сверху) для промпта; без права читать историю — пусто."""
-    perms = channel.permissions_for(channel.guild.me) if hasattr(channel, "guild") else None  # type: ignore[union-attr]
-    if perms is not None and not perms.read_message_history:
+    guild = getattr(channel, "guild", None)  # в личке guild = None
+    if guild is not None and not channel.permissions_for(guild.me).read_message_history:  # type: ignore[union-attr]
         return []
     out = []
     try:
@@ -179,7 +187,8 @@ class Mind(commands.Cog):
         reply = clean_reply(result["reply"], me) if result["reply"] else ""
         if author is not None and result["offense"]:
             said = history.splitlines()[-1] if history else ""
-            note = await self.punish(author, cfg, result["offense"], said, result["offense_reason"])
+            note = await self.punish(author, cfg, result["offense"], said, result["offense_reason"],
+                                     result["mute_minutes"])
             if note:
                 notes.append(note)
         if author is not None and result["move"]:
@@ -204,7 +213,7 @@ class Mind(commands.Cog):
             await self._dm(p, text)
 
     async def punish(self, member: discord.Member, cfg: ChatterConfig, level: int, said: str,
-                     why_offended: str = "") -> str | None:
+                     why_offended: str = "", mute_minutes: int | None = None) -> str | None:
         if not (cfg.punish_enabled and level >= cfg.punish_min_level):
             return None
         why = self._untouchable(member, cfg)
@@ -232,20 +241,22 @@ class Mind(commands.Cog):
         reason = f"{why_offended} — «{said}»" if why_offended else f"«{said}»"
         await self.app.mind.add_grudge(guild.id, member.id, [r.id for r in removed], reason)
         muted = False
-        if cfg.punish_mute_minutes:
+        # Срок решает сам бот по тяжести обиды; если не сказал — по уровню. Не больше максимума из настроек.
+        minutes = min(cfg.punish_mute_minutes, mute_minutes or DEFAULT_MUTE[level]) if cfg.punish_mute_minutes else 0
+        if minutes:
             if me.guild_permissions.moderate_members:
                 try:
-                    await member.timeout(timedelta(minutes=cfg.punish_mute_minutes), reason="Mishanya: оскорбил бота")
+                    await member.timeout(timedelta(minutes=minutes), reason=f"Mishanya: оскорбил бота ({why_offended or said})"[:500])
                     muted = True
                 except discord.HTTPException as exc:
                     problems.append(f"мут не вышел ({exc})")
             else:
                 problems.append("нет права «Отправлять участников подумать»")
         log.info("Обида: %s (уровень %d) — снято ролей %d, мут %s. %s", member, level, len(removed),
-                 f"{cfg.punish_mute_minutes} мин" if muted else "нет", "; ".join(problems))
+                 f"{minutes} мин" if muted else "нет", "; ".join(problems))
         parts = []
         if muted:
-            parts.append(f"мут на {cfg.punish_mute_minutes} мин")
+            parts.append(f"мут на {fmt_minutes(minutes)}")
         if removed:
             parts.append(f"снято ролей: {len(removed)}")
         await self.notify(guild, cfg, f"😤 Обиделся на **{member.display_name}** («{guild.name}»): {reason}. "
