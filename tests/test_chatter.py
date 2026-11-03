@@ -196,3 +196,50 @@ def test_vision_error_explains_image_generators():
 
     assert "РИСУЕТ" in explain_vision_error("DeepSeek ответил ошибкой 404: not found", "gpt-image-2")
     assert "нет модели" in explain_vision_error("ответил ошибкой 404", "gpt-4o-mni")
+
+
+def test_reply_stream_extracts_reply_as_it_arrives():
+    from mishanya.services.chatter import ReplyStream
+
+    rs = ReplyStream()
+    chunks = ['{"rep', 'ly": "Ну здра', 'вствуй, \\"холоп\\". ', 'Чего надо?\nГовори', '", "offense": 0}']
+    out = "".join(rs.feed(c) for c in chunks)
+    assert out == 'Ну здравствуй, "холоп". Чего надо?\nГовори'
+    rs = ReplyStream()
+    assert rs.feed("Просто ") + rs.feed("текст.") == "Просто текст."  # не JSON — весь текст
+    rs = ReplyStream()
+    assert rs.feed('{"reply": "\u041f') + rs.feed('ривет"}') == "Привет"
+
+
+async def test_generate_streams_deltas(fake_deepseek, monkeypatch):
+    """Потоковый режим: куски приходят по мере генерации (SSE), в конце — весь текст."""
+    from aiohttp import web
+
+    from mishanya.services.chatter import generate
+
+    async def sse(request):  # noqa: ANN001
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        for piece in ['{"reply": "Раз. ', 'Два."}']:
+            await resp.write(f'data: {{"choices": [{{"delta": {{"content": {__import__("json").dumps(piece)}}}}}]}}\n\n'.encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", sse)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"  # noqa: SLF001
+    got = []
+
+    async def on_delta(d):  # noqa: ANN001
+        got.append(d)
+
+    try:
+        text = await generate(api_key="k", base_url=url, model="m", system_prompt="s", history="", channel="c",
+                              bot_name="b", mentioned=True, temperature=1, max_tokens=50, raw=True, on_delta=on_delta)
+    finally:
+        await runner.cleanup()
+    assert got == ['{"reply": "Раз. ', 'Два."}'] and text == '{"reply": "Раз. Два."}'

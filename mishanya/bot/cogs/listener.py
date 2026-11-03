@@ -35,6 +35,8 @@ ALONE_LEAVE_SECONDS = 60
 MAX_PARALLEL_STT = 5
 STALE_SECONDS = 12  # фраза ждала распознавания дольше — пропускаем: отвечать на старое бессмысленно
 FRAME = 3840  # 20 мс стерео 48 кГц, 16 бит
+SENTENCE_END = re.compile(r"[.!?…]+[»\")]*\s")  # конец предложения — можно отдавать в озвучку
+MIN_SENTENCE = 12  # слишком короткие куски не озвучиваем отдельно — звучит рвано
 
 try:
     from discord.ext import voice_recv
@@ -105,6 +107,7 @@ class Session:
     alone_since: float | None = None
     replying: bool = False
     pending: tuple | None = None  # обращение, пришедшее, пока бот говорил: (участник, как обратились)
+    heard_at: float = 0.0  # когда закончилась фраза, на которую отвечаем (для замера задержки)
     last_decided: float = 0.0  # когда бот последний раз решал, влезать ли в разговор
     last_spoke: float = 0.0  # когда бот последний раз говорил
     heard_since: int = 0  # реплик людей с тех пор
@@ -221,8 +224,9 @@ class Listener(commands.Cog):
                 vc = await channel.connect(cls=voice_recv.VoiceRecvClient, timeout=20, self_deaf=False)
             except asyncio.TimeoutError:
                 raise UserFacingError("Не удалось зайти в голосовой канал: Discord не ответил за 20 секунд.") from None
+        cfg = await self._cfg(guild.id)
         session = Session(vc=vc, channel_id=channel.id, started=time.monotonic(),
-                          collector=UtteranceCollector(end_silence=0.6))
+                          collector=UtteranceCollector(end_silence=cfg.listen_end_silence_ms / 1000))
         vc.listen(CollectorSink(session.collector))  # type: ignore[attr-defined]
         install_dave_decrypt(vc)
         self.sessions[guild.id] = session
@@ -315,6 +319,7 @@ class Listener(commands.Cog):
             "wake" if any(w in text.lower() for w in cfg.listen_wake_words) else None)
         addressed = how is not None or now < session.open_until
         session.recent.append((time.time(), name, text, addressed))
+        session.heard_at = queued or now
         session.dialog.append((name, text))
         session.heard_since += 1
         log.info("Слушание: %s (распознано за %.1f с): %s", name, time.monotonic() - t0, text[:150])
@@ -356,71 +361,114 @@ class Listener(commands.Cog):
 
     async def _reply(self, guild: discord.Guild, session: Session, cfg: ChatterConfig,
                      member: discord.Member | None = None, interject: bool = False, how: str | None = None) -> bool:
-        """Отвечает голосом (поверх музыки, если она играет). Возвращает, сказал ли что-нибудь."""
+        """Отвечает голосом: озвучивает фразы по мере того, как ИИ их пишет (поверх музыки, если играет).
+        Возвращает, сказал ли что-нибудь."""
         vc = session.vc
         if not vc.is_connected():
             return False
         t0 = time.monotonic()
         s = self.app.settings
         me = guild.me.display_name
+        queue: asyncio.Queue = asyncio.Queue()
+        stats = {"first_text": None, "first_audio": None}
+        player = asyncio.create_task(self._play_queue(vc, queue, cfg, stats))
+        buf = {"text": "", "said": ""}
+
+        def push(sentence: str) -> None:
+            sentence = sentence.strip()
+            if sentence:
+                buf["said"] += sentence + " "
+                queue.put_nowait(asyncio.create_task(speak(sentence, cfg)))
+
+        async def on_reply(piece: str) -> None:
+            if stats["first_text"] is None:
+                stats["first_text"] = time.monotonic()
+            buf["text"] += piece
+            while True:  # готовое предложение — сразу в озвучку, не дожидаясь остального ответа
+                m = SENTENCE_END.search(buf["text"])
+                if not m or m.end() < MIN_SENTENCE:
+                    break
+                push(buf["text"][:m.end()])
+                buf["text"] = buf["text"][m.end():]
+
         text: str | None = None
         ai_failed = not (cfg.use_ai and s.deepseek_api_key)
-        if cfg.use_ai and s.deepseek_api_key:
-            dialog = "\n".join(f"{n}: {t}" for n, t in session.dialog)
-            people = ", ".join(m.display_name for m in vc.channel.members if not m.bot)
-            task = (f"Ты сидишь в голосовом канале «{vc.channel.name}» (там: {people}) и слышишь разговор — это "
-                    "расшифровка речи, в ней бывают ошибки распознавания. "
-                    + ("К тебе прямо не обращались. Реши сам: если последняя реплика всё-таки тебе (по смыслу), "
-                       "или тебе реально интересно, или есть что сказать смешного и дерзкого — скажи. Если нет — "
-                       "оставь reply пустым, молчать нормально, не влезай ради галочки. " if interject else
-                       "Последняя реплика обращена к тебе — ответь на неё. ")
-                    + (self.bot.get_cog("Mind").alias_scold(cfg) + " " if how == "alias_bad" else "")  # type: ignore[union-attr]
-                    + "Говори вслух 1–2 короткими фразами (до 200 символов) — ответ озвучивается голосом, поэтому "
-                    "без смайликов, разметки и ссылок.")
-            mind = self.bot.get_cog("Mind")
-            try:
-                if mind is not None:  # с памятью и действиями: обиды, «перекинь меня в …»
-                    text, notes = await mind.brain(guild, member, cfg, history=dialog,  # type: ignore[attr-defined]
-                                                   channel_name=vc.channel.name, task=task, voice=True)
-                    for note in notes:
-                        session.recent.append((time.time(), "⚙", note, False))
-                    if not text and notes:
-                        text = "Сделано."
-                else:
-                    text = await generate(api_key=s.deepseek_api_key, base_url=s.deepseek_base_url,
-                                          model=s.deepseek_model, system_prompt=cfg.system_prompt, history=dialog,
-                                          channel=vc.channel.name, bot_name=me, mentioned=True,
-                                          temperature=cfg.temperature, max_tokens=cfg.max_tokens, task=task)
-            except ChatterError as exc:
-                log.warning("Слушание: %s", exc)
-                self.app.chatter_error = str(exc)
-                ai_failed = True
-                if interject or not cfg.fallback_to_phrases:
-                    return False
-        if not text and ai_failed and not interject:
-            text = pick_phrase(cfg.phrases)
-        if not text:
-            return False
-        t_ai = time.monotonic()
-        # Озвучиваем фразы параллельно и начинаем говорить, как только готова первая.
-        parts = [p for p in re.split(r"(?<=[.!?…])\s+", text) if p.strip()] or [text]
-        jobs = [asyncio.create_task(speak(p, cfg))
-                for p in parts[:4]]
-        session.dialog.append((me, text))
-        session.recent.append((time.time(), me, text, False))
+        try:
+            if cfg.use_ai and s.deepseek_api_key:
+                dialog = "\n".join(f"{n}: {t}" for n, t in session.dialog)
+                people = ", ".join(m.display_name for m in vc.channel.members if not m.bot)
+                task = (f"Ты сидишь в голосовом канале «{vc.channel.name}» (там: {people}) и слышишь разговор — это "
+                        "расшифровка речи, в ней бывают ошибки распознавания. Это живой разговор вслух: отвечай сразу и "
+                        "коротко, первая фраза — самая важная. "
+                        + ("К тебе прямо не обращались. Реши сам: если последняя реплика всё-таки тебе (по смыслу), "
+                           "или тебе реально интересно, или есть что сказать смешного и дерзкого — скажи. Если нет — "
+                           "оставь reply пустым, молчать нормально, не влезай ради галочки. " if interject else
+                           "Последняя реплика обращена к тебе — ответь на неё. ")
+                        + (self.bot.get_cog("Mind").alias_scold(cfg) + " " if how == "alias_bad" else "")  # type: ignore[union-attr]
+                        + "Говори вслух 1–2 короткими фразами (до 200 символов) — ответ озвучивается голосом, поэтому "
+                        "без смайликов, разметки и ссылок.")
+                mind = self.bot.get_cog("Mind")
+                try:
+                    if mind is not None:  # с памятью и действиями: обиды, музыка, «открой спотик»…
+                        text, notes = await mind.brain(guild, member, cfg, history=dialog,  # type: ignore[attr-defined]
+                                                       channel_name=vc.channel.name, task=task, voice=True,
+                                                       on_reply=on_reply)
+                        for note in notes:
+                            session.recent.append((time.time(), "⚙", note, False))
+                        if not text and notes:
+                            text = "Сделано."
+                    else:
+                        text = await generate(api_key=s.deepseek_api_key, base_url=s.deepseek_base_url,
+                                              model=s.deepseek_model, system_prompt=cfg.system_prompt, history=dialog,
+                                              channel=vc.channel.name, bot_name=me, mentioned=True,
+                                              temperature=cfg.temperature, max_tokens=cfg.max_tokens, task=task)
+                except ChatterError as exc:
+                    log.warning("Слушание: %s", exc)
+                    self.app.chatter_error = str(exc)
+                    ai_failed = True
+                    if interject or not cfg.fallback_to_phrases:
+                        return False
+            if not text and ai_failed and not interject:
+                text = pick_phrase(cfg.phrases)
+            if buf["said"] or buf["text"].strip():
+                push(buf["text"])  # хвост, который пришёл без точки в конце
+            elif text:  # ответ пришёл не потоком (картинки, запасная фраза) — режем на фразы сами
+                for part in re.split(r"(?<=[.!?…])\s+", text)[:4]:
+                    push(part)
+            said = (buf["said"] or text or "").strip()
+            if said:
+                session.dialog.append((me, said))
+                session.recent.append((time.time(), me, said, False))
+        finally:
+            queue.put_nowait(None)
+        spoke = await player
+        if spoke and stats["first_audio"]:
+            ft = stats["first_text"]
+            log.info("Слушание: голос через %.1f с после конца фразы (распознавание %.1f с, ИИ до первых слов %s, "
+                     "озвучка первой фразы %.1f с)", stats["first_audio"] - (session.heard_at or t0),
+                     t0 - (session.heard_at or t0), f"{ft - t0:.1f} с" if ft else "—",
+                     stats["first_audio"] - (ft or t0))
+        return spoke
+
+    async def _play_queue(self, vc, queue: asyncio.Queue, cfg: ChatterConfig, stats: dict) -> bool:  # noqa: ANN001
+        """Проигрывает озвученные фразы строго по порядку, пока в очереди не окажется None."""
         loop = asyncio.get_running_loop()
         spoke = False
-        for i, job in enumerate(jobs):
+        while True:
+            job = await queue.get()
+            if job is None:
+                return spoke
             try:
                 data, engine = await job
             except TtsError as exc:
                 log.warning("Слушание: %s", exc)
                 continue
-            if i == 0:
-                log.info("Слушание: ответ за %.1f с (ИИ %.1f с, озвучка %.1f с)", time.monotonic() - t0,
-                         t_ai - t0, time.monotonic() - t_ai)
+            except asyncio.CancelledError:
+                continue
             if not vc.is_connected():
-                break
+                continue
+            if stats["first_audio"] is None:
+                stats["first_audio"] = time.monotonic()
             opts = ffmpeg_options(engine, cfg.voice_rate)
             if vc.is_playing():
                 # Играет музыка: говорим поверх неё, приглушив на время речи.
@@ -445,9 +493,6 @@ class Listener(commands.Cog):
                 await asyncio.wait_for(done.wait(), 60)
             except asyncio.TimeoutError:
                 vc.stop()
-        for job in jobs:
-            job.cancel()
-        return spoke
 
     # ------------------------------------------------------------ автоматически и из Discord
 

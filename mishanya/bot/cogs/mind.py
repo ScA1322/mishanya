@@ -18,7 +18,7 @@ from discord.ext import commands, tasks
 
 from ...db.models import utcnow
 from ...schemas import ChatterConfig
-from ...services.chatter import ChatterError, clean_reply, format_history, generate
+from ...services.chatter import ChatterError, ReplyStream, clean_reply, format_history, generate
 from ...services import pc
 from ...services.mind import ACTIONS_FORMAT, best_match, normalize, open_steam_game, parse_actions, parse_json, \
     trigger_matches
@@ -257,7 +257,8 @@ class Mind(commands.Cog):
 
     async def _llm(self, cfg: ChatterConfig, *, history: str, channel: str, task: str, bot_name: str,
                    raw: bool = False, memory: list[str] | None = None, images: list[str] | None = None,
-                   context: str = "", temperature: float | None = None, max_tokens: int | None = None) -> str:
+                   context: str = "", temperature: float | None = None, max_tokens: int | None = None,
+                   on_delta=None) -> str:  # noqa: ANN001
         s = self.app.settings
         vision = bool(images) and cfg.vision_enabled and bool(s.vision_model)
         if images and not vision:
@@ -291,7 +292,7 @@ class Mind(commands.Cog):
                 system_prompt=cfg.system_prompt, history=history, channel=channel, bot_name=bot_name,
                 mentioned=True, temperature=cfg.temperature if temperature is None else temperature,
                 max_tokens=max_tokens or cfg.max_tokens, task=task, memory=memory,
-                images=images if vision else None, raw=raw, context=context)
+                images=images if vision else None, raw=raw, context=context, on_delta=on_delta)
         except ChatterError as exc:
             self.app.chatter_error = str(exc)
             raise
@@ -433,8 +434,9 @@ class Mind(commands.Cog):
     async def brain(self, guild: discord.Guild, author: discord.Member | None, cfg: ChatterConfig, *,
                     history: str, channel_name: str, task: str, images: list[str] | None = None,
                     voice: bool = False, channel: discord.abc.Messageable | None = None,
-                    extra_context: str = "") -> tuple[str, list[str]]:
-        """Ответ модели + выполнение действий. Возвращает (реплика, заметки о сделанном)."""
+                    extra_context: str = "", on_reply=None) -> tuple[str, list[str]]:  # noqa: ANN001
+        """Ответ модели + выполнение действий. Возвращает (реплика, заметки о сделанном).
+        on_reply — получать текст реплики по кусочкам, пока модель пишет (голос начинает говорить сразу)."""
         me = guild.me.display_name
         trusted = author is not None and self.is_trusted(author.id, cfg, author)
         # Своим — память обо всех в разговоре; остальным — только о них самих (конфиденциальность).
@@ -480,8 +482,16 @@ class Mind(commands.Cog):
             spam = self.note_contact(guild.id, author.id)
             if spam >= 5:
                 context += f"\n{author.display_name} спамит тебе: {spam} обращений за минуту."
+        on_delta = None
+        if on_reply is not None:
+            stream = ReplyStream()
+
+            async def on_delta(chunk: str) -> None:
+                piece = stream.feed(chunk)
+                if piece:
+                    await on_reply(piece)
         raw = await self._llm(cfg, history=history, channel=channel_name, bot_name=me, raw=True, memory=memory,
-                              images=images, context=context,
+                              images=images, context=context, on_delta=on_delta,
                               task=f"{task}\n\n{ACTIONS_FORMAT}", max_tokens=max(cfg.max_tokens, 200))
         result = parse_actions(raw)
         notes: list[str] = []

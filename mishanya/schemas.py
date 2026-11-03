@@ -467,6 +467,7 @@ class ChatterConfig(Strict):
     listen_wake_words: list[str] = Field(default_factory=lambda: ["император"], max_length=20)
     listen_followup_seconds: int = Field(30, ge=0, le=300)  # после ответа слушает без обращения
     listen_min_seconds: float = Field(0.6, ge=0.2, le=5)  # короче — не распознаём (кашель, «ага»)
+    listen_end_silence_ms: int = Field(450, ge=200, le=2000)  # столько тишины — и фраза считается законченной
     listen_max_minutes: int = Field(60, ge=5, le=600)  # потом выходит, чтобы не тратить деньги впустую
     listen_auto: bool = False  # сам садиться в голосовой канал, где больше всего людей
     # Влезать в голосовой разговор без обращения: ai — сам решает, есть ли что сказать; chance — по шансу; off — нет

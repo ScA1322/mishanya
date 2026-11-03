@@ -211,3 +211,40 @@ def test_address_kinds():
     assert cog.address("Импер, включи музыку", friend, cfg) == "alias"
     assert cog.address("импер, включи", stranger, cfg) == "alias_bad"
     assert cog.address("империя наносит ответный удар", friend, cfg) is None
+
+
+async def test_voice_starts_speaking_before_ai_finishes(monkeypatch):
+    """Голос: первое предложение уходит в озвучку, пока ИИ ещё пишет ответ."""
+    from mishanya.bot.cogs import listener as L
+    from mishanya.schemas import ChatterConfig
+
+    order = []
+
+    async def fake_speak(text, cfg):  # noqa: ANN001
+        order.append(f"speak:{text}")
+        return b"mp3", "google"
+
+    class Mind:
+        async def brain(self, guild, member, cfg, **kw):  # noqa: ANN001, ANN003
+            await kw["on_reply"]("Слушаю тебя, холоп. ")
+            await L.asyncio.sleep(0.05)  # ИИ ещё «пишет»
+            order.append("ai:done")
+            await kw["on_reply"]("Говори быстро")
+            return "Слушаю тебя, холоп. Говори быстро", []
+
+        def alias_scold(self, cfg):  # noqa: ANN001
+            return ""
+
+    monkeypatch.setattr(L, "speak", fake_speak)
+    monkeypatch.setattr(L.discord, "FFmpegPCMAudio", lambda *a, **kw: object())
+    vc = SimpleNamespace(is_connected=lambda: True, is_playing=lambda: False,
+                         channel=SimpleNamespace(name="Основной", members=[]),
+                         play=lambda src, after: after(None))
+    cog = L.Listener.__new__(L.Listener)
+    cog.bot = SimpleNamespace(get_cog=lambda n: Mind() if n == "Mind" else None)
+    cog.app = SimpleNamespace(settings=SimpleNamespace(deepseek_api_key="k"), chatter_error=None)
+    session = L.Session(vc=vc, channel_id=1, started=0, collector=L.UtteranceCollector())
+    guild = SimpleNamespace(me=SimpleNamespace(display_name="Император"))
+    assert await cog._reply(guild, session, ChatterConfig(enabled=True), None) is True
+    assert order.index("speak:Слушаю тебя, холоп.") < order.index("ai:done")
+    assert order[-1] == "speak:Говори быстро"

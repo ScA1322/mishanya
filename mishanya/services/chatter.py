@@ -1,6 +1,7 @@
 """Болтовня: генерация реплик через DeepSeek (OpenAI-совместимый API) и запасные фразы."""
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -47,9 +48,10 @@ def pick_phrase(phrases: list[str]) -> str | None:
 async def generate(*, api_key: str, base_url: str, model: str, system_prompt: str, history: str, channel: str,
                    bot_name: str, mentioned: bool, temperature: float, max_tokens: int,
                    task: str | None = None, memory: list[str] | None = None, images: list[str] | None = None,
-                   raw: bool = False, context: str = "") -> str:
+                   raw: bool = False, context: str = "", on_delta=None) -> str:  # noqa: ANN001
     """Реплика модели. raw=True — вернуть ответ как есть (JSON с действиями), images — ссылки на картинки
-    (нужна модель со зрением), memory — что бот помнит, context — служебные сведения (люди, каналы)."""
+    (нужна модель со зрением), memory — что бот помнит, context — служебные сведения (люди, каналы).
+    on_delta — получать ответ по кусочкам по мере генерации (для голоса: озвучивать, не дожидаясь конца)."""
     if not api_key:
         raise ChatterError("Ключ DeepSeek не задан")
     task = task or ("Тебя упомянули или ответили на твоё сообщение — ответь на последнее сообщение."
@@ -69,6 +71,8 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if on_delta is not None:
+        body["stream"] = True
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as s:
@@ -83,7 +87,25 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
                 if r.status >= 400:
                     detail = (await r.text())[:200]
                     raise ChatterError(f"DeepSeek ответил ошибкой {r.status}: {detail}")
-                data = await r.json(content_type=None)
+                if on_delta is not None and "text/event-stream" in r.headers.get("Content-Type", ""):
+                    parts: list[str] = []
+                    async for line in r.content:
+                        line = line.strip()
+                        if not line.startswith(b"data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload == b"[DONE]":
+                            break
+                        try:
+                            delta = (json.loads(payload)["choices"][0].get("delta") or {}).get("content") or ""
+                        except (ValueError, KeyError, IndexError, TypeError):
+                            continue
+                        if delta:
+                            parts.append(delta)
+                            await on_delta(delta)
+                    data = {"choices": [{"message": {"content": "".join(parts)}}]}
+                else:
+                    data = await r.json(content_type=None)
     except (aiohttp.ClientError, TimeoutError) as exc:
         raise ChatterError(f"Нет связи с DeepSeek: {exc or 'тайм-аут'}") from None
     try:
@@ -98,6 +120,69 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
     if not text:
         raise ChatterError("DeepSeek вернул пустой ответ")
     return text
+
+
+class ReplyStream:
+    """Достаёт значение поля "reply" из JSON-ответа, который приходит кусочками. Если модель ответила обычным
+    текстом (не JSON), отдаёт весь текст."""
+
+    ESCAPES = {"n": "\n", "t": " ", '"': '"', "\\": "\\", "/": "/"}
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self.mode: str | None = None  # None — ещё не ясно; json; text; done
+        self.pos = 0
+        self.escape = False
+
+    def feed(self, chunk: str) -> str:
+        self.buf += chunk
+        if self.mode is None:
+            head = self.buf.lstrip()
+            if not head:
+                return ""
+            if head[0] in "{`":
+                self.mode = "json"
+            else:
+                self.mode = "text"
+                self.pos = len(self.buf)
+                return self.buf
+        if self.mode == "text":
+            out = self.buf[self.pos:]
+            self.pos = len(self.buf)
+            return out
+        if self.mode == "json" and self.pos == 0:
+            m = re.search(r'"reply"\s*:\s*"', self.buf)
+            if not m:
+                return ""
+            self.pos, self.mode = m.end(), "value"
+        if self.mode != "value":
+            return ""
+        out = []
+        while self.pos < len(self.buf):
+            ch = self.buf[self.pos]
+            self.pos += 1
+            if self.escape:
+                self.escape = False
+                if ch == "u":  # \uXXXX — ждём все 4 цифры
+                    if self.pos + 4 > len(self.buf):
+                        self.pos -= 2
+                        self.escape = False
+                        break
+                    out.append(chr(int(self.buf[self.pos:self.pos + 4], 16)))
+                    self.pos += 4
+                else:
+                    out.append(self.ESCAPES.get(ch, ch))
+            elif ch == "\\":
+                if self.pos >= len(self.buf):
+                    self.pos -= 1
+                    break
+                self.escape = True
+            elif ch == '"':
+                self.mode = "done"
+                break
+            else:
+                out.append(ch)
+        return "".join(out)
 
 
 def vision_test_image() -> tuple[str, str]:

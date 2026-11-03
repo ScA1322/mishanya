@@ -14,7 +14,7 @@ interface ChatterConfig extends MindConfig {
   voice_enabled: boolean; voice_channels: string[]; voice_interval_minutes: number; voice_max_per_hour: number;
   voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google" | "elevenlabs" | "openai"; voice_eleven_id: string; voice_openai: string; voice_name: "dmitry" | "svetlana";
   voice_rate: number; voice_pitch: number;
-  listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean;
+  listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean; listen_end_silence_ms: number;
 }
 interface Status { ai_configured: boolean; key_hint: string | null; model: string; base_url: string; vision_model: string; last_error: string | null }
 interface TestResult { text: string | null; source: "ai" | "phrase"; error: string | null; context: string | null }
@@ -311,6 +311,8 @@ function ListenCard({ guildId, d, set }: {
         <Field label="Разговор без обращения после ответа, сек" hint="0 — только по слову-обращению"><NumberInput value={d.listen_followup_seconds} min={0} max={300} onChange={(v) => set("listen_followup_seconds", v)} /></Field>
         <Field label="Не распознавать фразы короче, сек" hint="Отсекает кашель и «ага» — экономит деньги"><NumberInput value={d.listen_min_seconds} min={0.2} max={5} step={0.1} onChange={(v) => set("listen_min_seconds", v)} /></Field>
         <Field label="Выйти через, минут"><NumberInput value={d.listen_max_minutes} min={5} max={600} onChange={(v) => set("listen_max_minutes", v)} /></Field>
+        <Field label="Пауза, после которой фраза закончена, мс" hint="Меньше — бот отвечает быстрее, но может перебить, если вы задумались посреди фразы. 350–500 — живой разговор">
+          <NumberInput value={d.listen_end_silence_ms} min={200} max={2000} step={50} onChange={(v) => set("listen_end_silence_ms", v)} /></Field>
       </div>
       <div className="grid grid-2 mt">
         <Field label="Влезать в разговор без обращения" hint="«Сам решает» — бот слушает весь разговор и говорит, когда ему интересно, есть что сказать или реплика по смыслу ему (даже без слова «император»)">
