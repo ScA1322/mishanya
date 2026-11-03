@@ -408,6 +408,28 @@ class PcProgram(Strict):
                         pattern=r"(?i)^(steam://rungameid/\d{1,10}|[A-Za-z]:\\[^<>\"|?*]+\.(exe|lnk|url))$")
 
 
+class FamilyMember(Strict):
+    """Семья бота. Узнаётся только по аккаунту: ID или уникальному логину Discord, а не по нику и не по словам."""
+    user_id: OptSnowflake = None
+    username: str = Field("", max_length=32, pattern=r"^[A-Za-z0-9_.]*$")  # логин Discord (уникальный)
+    title: str = Field(min_length=1, max_length=60)  # «отец», «второй отец»…
+    prompt: str = Field("", max_length=2000)  # как бот к нему относится
+
+    @field_validator("username")
+    @classmethod
+    def _lower(cls, v: str) -> str:
+        return v.lower()
+
+    @model_validator(mode="after")
+    def _who(self) -> "FamilyMember":
+        if not self.user_id and not self.username:
+            raise ValueError("У члена семьи должен быть выбран аккаунт (ID) или логин Discord")
+        return self
+
+
+DEFAULT_FATHER = 'Твой создатель. Ты называешь его отцом и признаёшь единственным человеком, перед которым добровольно склоняешь голову. С ним позволительно спорить, шутить и ворчать, но его мнение для тебя важнее всех остальных. Ты предан ему как сын, которому дали имя и дом. Если отец просит о помощи, отбрось театральность и действуй толково.'
+
+
 class ChatterConfig(Strict):
     enabled: bool = False
     channels: list[Snowflake] = Field(default_factory=list, max_length=50)  # пусто — все текстовые каналы
@@ -483,6 +505,9 @@ class ChatterConfig(Strict):
     join_requests: bool = True
     join_min_messages: int = Field(8, ge=1, le=200)  # сколько он должен написать боту, прежде чем просьбу рассмотрят
     join_retry_hours: int = Field(6, ge=0, le=720)
+    # Семья: создатели бота, к которым он относится по-особому
+    family: list[FamilyMember] = Field(
+        default_factory=lambda: [FamilyMember(username="hashish", title="отец", prompt=DEFAULT_FATHER)], max_length=10)
     # Передать сообщение в личку кому-то с сервера по просьбе любого человека
     relay_dm: bool = True
     relay_per_hour: int = Field(5, ge=1, le=100)  # от одного человека в час — чтобы бота не превратили в спамера

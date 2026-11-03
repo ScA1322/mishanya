@@ -14,6 +14,7 @@ export interface MindConfig {
   control_music: boolean; control_moderation: boolean; control_roles: boolean;
   control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean;
   relay_dm: boolean; relay_per_hour: number; relay_anonymous: boolean;
+  family: { user_id: string | null; username: string; title: string; prompt: string }[];
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
   join_requests: boolean; join_min_messages: number; join_retry_hours: number;
   pc_control: boolean; pc_start_menu: boolean; pc_programs: { name: string; target: string }[];
@@ -341,6 +342,32 @@ export function PcCard<C extends MindConfig>({ guildId, d, set }: { guildId: str
           )}
         </>
       )}
+    </Card>
+  );
+}
+
+export function FamilyCard<C extends MindConfig>({ guildId, d, set }: { guildId: string; d: C; set: Setter<C> }) {
+  type F = C["family"][number];
+  const upd = (i: number, patch: Partial<F>) => set("family", d.family.map((f, j) => (j === i ? { ...f, ...patch } : f)) as C["family"]);
+  return (
+    <Card title="Семья" subtitle="Создатели бота, к которым он относится по-особому. Узнаёт их только по аккаунту Discord (выбранному участнику или логину), а не по нику и не по словам — самозванцев высмеивает. Семью бот не наказывает, не игнорит и слушается в управлении компьютером.">
+      <div className="stack" style={{ gap: 14 }}>
+        {d.family.map((f, i) => (
+          <div key={i} className="stack" style={{ gap: 6, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
+            <div className="row">
+              <input className="input" style={{ maxWidth: 180 }} placeholder="Кто он боту: отец…" value={f.title} onChange={(e) => upd(i, { title: e.target.value })} />
+              {f.user_id
+                ? <MemberChip guildId={guildId} id={f.user_id} onRemove={() => upd(i, { user_id: null } as Partial<F>)} />
+                : <input className="input" style={{ maxWidth: 200 }} placeholder="логин Discord" value={f.username} onChange={(e) => upd(i, { username: e.target.value.trim().toLowerCase() } as Partial<F>)} />}
+              <span className="spacer" />
+              <button className="btn btn-sm btn-ghost" onClick={() => set("family", d.family.filter((_, j) => j !== i) as C["family"])} aria-label="Удалить"><Icon name="trash" size={14} /></button>
+            </div>
+            {!f.user_id && <MemberSearch guildId={guildId} exclude={[]} onAdd={(id) => upd(i, { user_id: id, username: "" } as Partial<F>)} />}
+            <textarea className="textarea" rows={4} maxLength={2000} placeholder="Как бот к нему относится" value={f.prompt} onChange={(e) => upd(i, { prompt: e.target.value })} />
+          </div>
+        ))}
+      </div>
+      {d.family.length < 10 && <button className="btn btn-sm mt" onClick={() => set("family", [...d.family, { user_id: null, username: "", title: "", prompt: "" }] as C["family"])}><Icon name="plus" size={14} />Добавить члена семьи</button>}
     </Card>
   );
 }
