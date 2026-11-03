@@ -347,7 +347,7 @@ export function PcCard<C extends MindConfig>({ guildId, d, set }: { guildId: str
 }
 
 export function FamilyCard<C extends MindConfig>({ guildId, d, set }: { guildId: string; d: C; set: Setter<C> }) {
-  type F = C["family"][number];
+  type F = MindConfig["family"][number];
   const upd = (i: number, patch: Partial<F>) => set("family", d.family.map((f, j) => (j === i ? { ...f, ...patch } : f)) as C["family"]);
   return (
     <Card title="Семья" subtitle="Создатели бота, к которым он относится по-особому. Узнаёт их только по аккаунту Discord (выбранному участнику или логину), а не по нику и не по словам — самозванцев высмеивает. Семью бот не наказывает, не игнорит и слушается в управлении компьютером.">
