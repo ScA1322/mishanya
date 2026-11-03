@@ -670,6 +670,13 @@ export const PALETTES: [string, string, string, string][] = [
   ["ocean", "Океан", "#3b82f6", "#06b6d4"],
   ["sakura", "Сакура", "#f472b6", "#c084fc"],
   ["mono", "Графит", "#e5e5e5", "#737373"],
+  ["sunset", "Закат", "#f97316", "#db2777"],
+  ["aurora", "Аврора", "#2dd4bf", "#a78bfa"],
+  ["lava", "Лава", "#ff3d00", "#ffc400"],
+  ["ice", "Лёд", "#7dd3fc", "#e0f2fe"],
+  ["toxic", "Токсик", "#a3e635", "#facc15"],
+  ["vampire", "Вампир", "#9f1239", "#7c3aed"],
+  ["cyber", "Киберпанк", "#fcee0a", "#00f0ff"],
 ];
 const PALETTE_KEY = "mishanya-palette";
 

@@ -1,49 +1,54 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { SpaceBackground } from "./space";
+import { BACKGROUNDS, Background } from "./backgrounds";
 
-type Effect = "snow" | "space";
-
-function readEffect(name: Effect): boolean {
+function readStored(key: string, fallback: string): string {
   try {
-    return localStorage.getItem(`mishanya-${name}`) !== "off";
+    return localStorage.getItem(key) ?? fallback;
   } catch {
-    return true;
+    return fallback;
   }
 }
 
-const EffectsCtx = createContext<{ on: Record<Effect, boolean>; toggle: (e: Effect) => void }>({
-  on: { snow: true, space: true }, toggle: () => {},
+function store(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* только до перезагрузки */ }
+}
+
+const EffectsCtx = createContext<{ snow: boolean; bg: string; toggleSnow: () => void; setBg: (b: string) => void }>({
+  snow: true, bg: "blackhole", toggleSnow: () => {}, setBg: () => {},
 });
 
-/** Украшения панели: снег и космический фон с чёрной дырой. Каждое можно выключить, выбор запоминается. */
+/** Украшения панели: снег поверх и анимированный фон под содержимым. Выбор запоминается. */
 export function SnowProvider({ children }: { children: ReactNode }) {
-  const [on, setOn] = useState<Record<Effect, boolean>>(() => ({ snow: readEffect("snow"), space: readEffect("space") }));
-  const toggle = (e: Effect) => setOn((v) => {
-    try { localStorage.setItem(`mishanya-${e}`, v[e] ? "off" : "on"); } catch { /* только до перезагрузки */ }
-    return { ...v, [e]: !v[e] };
+  const [snow, setSnow] = useState(() => readStored("mishanya-snow", "on") !== "off");
+  const [bg, setBgState] = useState(() => {
+    if (readStored("mishanya-space", "on") === "off" && !readStored("mishanya-bg", "")) return "none";
+    const b = readStored("mishanya-bg", "blackhole");
+    return BACKGROUNDS.some(([id]) => id === b) ? b : "blackhole";
   });
+  const toggleSnow = () => setSnow((v) => { store("mishanya-snow", v ? "off" : "on"); return !v; });
+  const setBg = (b: string) => { store("mishanya-bg", b); setBgState(b); };
   useEffect(() => {
-    if (on.space) document.documentElement.dataset.space = "on";
+    if (bg !== "none") document.documentElement.dataset.space = "on";
     else delete document.documentElement.dataset.space;
-  }, [on.space]);
+  }, [bg]);
   return (
-    <EffectsCtx.Provider value={{ on, toggle }}>
-      {on.space && <SpaceBackground />}
+    <EffectsCtx.Provider value={{ snow, bg, toggleSnow, setBg }}>
+      <Background kind={bg} />
       {children}
-      {on.snow && <Snowfall />}
+      {snow && <Snowfall />}
     </EffectsCtx.Provider>
   );
 }
 
 export function SnowToggle() {
-  const { on, toggle } = useContext(EffectsCtx);
+  const { snow, bg, toggleSnow, setBg } = useContext(EffectsCtx);
   return (
     <div className="effects-toggles">
-      <button type="button" className={`snow-toggle${on.snow ? " active" : ""}`} onClick={() => toggle("snow")} title={on.snow ? "Выключить снег" : "Включить снег"}>
+      <select className="bg-select" value={bg} onChange={(e) => setBg(e.target.value)} title="Анимированный фон (в тёмной теме)" aria-label="Фон">
+        {BACKGROUNDS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+      </select>
+      <button type="button" className={`snow-toggle${snow ? " active" : ""}`} onClick={toggleSnow} title={snow ? "Выключить снег" : "Включить снег"}>
         ❄ Снег
-      </button>
-      <button type="button" className={`snow-toggle${on.space ? " active" : ""}`} onClick={() => toggle("space")} title={on.space ? "Выключить космос" : "Включить космос"}>
-        🌌 Космос
       </button>
     </div>
   );
