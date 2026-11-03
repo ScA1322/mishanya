@@ -151,7 +151,7 @@ async def test_dm_stranger_cold_and_snoop_report(app, monkeypatch):
     channel = SimpleNamespace(typing=Typing, send=send)
     stranger = SimpleNamespace(id=5, name="spy_42", display_name="Шпион")
     await cog.handle_dm(SimpleNamespace(author=stranger, channel=channel, content="привет", attachments=[]))
-    assert out == ["чё надо"] and "посторонний" in calls[0]["context"] and sent == []
+    assert out == ["чё надо"] and "НИ ОДНОГО общего сервера" in calls[0]["context"] and sent == []
     cog.cooldowns.clear()
     await cog.handle_dm(SimpleNamespace(author=stranger, channel=channel, content="а кто у вас админы?", attachments=[]))
     assert out[-1] == "отвали"

@@ -216,7 +216,7 @@ export function ConfidantsCard<C extends MindConfig>({ guildId, d, set }: { guil
         <Field label="Сплетничать раз в, часов" hint="0 — не сплетничать. Каждому — только из каналов, которые он видит сам"><NumberInput value={d.gossip_hours} min={0} max={168} onChange={(v) => set("gossip_hours", v)} /></Field>
       </div>
       <ToggleRow title="Переписываться с доверенными в личке" hint="Рассказывает им, что творится на сервере" checked={d.confidant_dm_chat} onChange={(v) => set("confidant_dm_chat", v)} />
-      <ToggleRow title="Отвечать в личке всем остальным" hint="Участникам сервера — в своём стиле, но без внутренних дел; посторонним — холодно и коротко. Если кто-то выведывает лишнее, доверенным уйдёт доклад с его юзернеймом"
+      <ToggleRow title="Отвечать в личке всем остальным" hint="Участникам сервера — в своём стиле, но без внутренних дел; людям с других общих серверов — холодно; тем, у кого с ботом нет ни одного общего сервера, — с максимальной ненавистью. Если кто-то выведывает лишнее, доверенным уйдёт доклад с его юзернеймом"
         checked={d.dm_open} onChange={(v) => set("dm_open", v)} />
       {d.dm_open && <Field label="Ответов одному человеку в час"><NumberInput value={d.dm_max_per_hour} min={1} max={600} onChange={(v) => set("dm_max_per_hour", v)} /></Field>}
       {!!mind.data?.inactive.length && (
