@@ -454,8 +454,12 @@ class ChatterConfig(Strict):
     apology_channel_id: OptSnowflake = None
     punish_exempt_roles: list[Snowflake] = Field(default_factory=list, max_length=50)
     # Перемещение по голосовым каналам по просьбе в чате или голосом
-    move_enabled: bool = True
-    move_others_requires_permission: bool = True  # чужих двигает, только если просит тот, у кого есть право
+    move_enabled: bool = True  # голосовые каналы: перекинуть, выкинуть, выключить микрофон
+    move_others_requires_permission: bool = False  # True — чужих двигает, только если просит тот, у кого есть право
+    # Власть бота: что он может делать сам, на своё усмотрение
+    control_music: bool = True
+    control_moderation: bool = True  # мут, ник, удаление сообщений
+    control_roles: bool = True  # выдавать и забирать роли (кроме ролей с админскими правами)
     # Доверенные: личная переписка с ботом и его доклады в ЛС
     confidants: list[Snowflake] = Field(default_factory=list, max_length=10)
     confidant_dm_chat: bool = True

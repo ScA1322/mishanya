@@ -159,7 +159,7 @@ class Chatter(commands.Cog):
                 async with channel.typing():
                     return await mind.brain(channel.guild, message.author, cfg,  # type: ignore[attr-defined]
                                             history=format_history(history, me), channel_name=channel.name,
-                                            task=task, images=image_urls(message))
+                                            task=task, images=image_urls(message), channel=channel)
             except ChatterError as exc:
                 log.warning("Болтовня: %s", exc)
                 if not (explicit and cfg.fallback_to_phrases):

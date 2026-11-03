@@ -19,7 +19,9 @@ def test_parse_actions():
           '"mute_minutes": 25, "move": [{"who": "я", "to": "Курилка"}]}\n```'
     a = parse_actions(raw)
     assert a == {"reply": "ну ты и дерзкий", "offense": 2, "offense_reason": "назвал тупым", "mute_minutes": 25,
-                 "move": [{"who": "я", "to": "Курилка"}]}
+                 "actions": [{"type": "move", "who": "я", "to": "Курилка"}]}
+    a = parse_actions('{"reply": "вырубаю", "actions": [{"type": "Music", "do": "stop"}, "мусор", {"do": "x"}]}')
+    assert a["actions"] == [{"type": "music", "do": "stop"}]
     assert parse_actions("просто текст")["reply"] == "просто текст"
     assert parse_actions('{"reply": "x", "offense": 99, "move": {"who": "Вася", "to": "AFK"}}')["offense"] == 3
     assert parse_json("мусор") is None
@@ -217,3 +219,46 @@ async def test_read_history_in_dm():
                                   attachments=[])
 
     assert await read_history(Dm(), 5, 1) == [("Вася", "привет", False)]
+
+
+async def test_bot_controls_music_and_people(app, monkeypatch):
+    """«Выруби музыку» — бот сам вырубает; админов и тех, кто выше него, не трогает; админские роли не раздаёт."""
+    from mishanya.bot.cogs import mind as M
+
+    cog, _, _ = _cog(app, monkeypatch, [])
+    controls = []
+
+    class Music:
+        async def control(self, gid, action, by=None):  # noqa: ANN001
+            controls.append(action)
+
+    class Role(SimpleNamespace):
+        def __ge__(self, other):  # noqa: ANN001
+            return self.position >= other.position
+
+    me_role, low_role = Role(position=10), Role(position=1)
+    me = SimpleNamespace(id=1, top_role=me_role, display_name="Император")
+    guild = SimpleNamespace(id=GID, owner_id=2, me=me, members=[])
+    perms = lambda admin=False: SimpleNamespace(administrator=admin)  # noqa: E731
+    vasya = FakeMember(id=5, name="vasya", display_name="Вася", global_name=None, bot=False, guild=guild,
+                       guild_permissions=perms(), top_role=low_role)
+    admin = FakeMember(id=6, name="adm", display_name="Админ", global_name=None, bot=False, guild=guild,
+                       guild_permissions=perms(True), top_role=low_role)
+    guild.members = [vasya, admin]
+    cog.bot = SimpleNamespace(get_cog=lambda n: Music() if n == "Music" else None)
+    cfg = ChatterConfig(enabled=True)
+
+    notes = await cog.do_actions(vasya, [{"type": "music", "do": "stop"}], cfg, None)
+    assert controls == ["stop"] and notes == ["⏹️ Вырубил музыку"]
+    notes = await cog.do_actions(vasya, [{"type": "timeout", "who": "Админ", "minutes": 10}], cfg, None)
+    assert "владелец или админ" in notes[0]
+    timeouts = []
+
+    async def timeout(d, reason=None):  # noqa: ANN001
+        timeouts.append(d)
+
+    vasya.timeout = timeout
+    notes = await cog.do_actions(vasya, [{"type": "timeout", "who": "я", "minutes": 30}], cfg, None)
+    assert timeouts and timeouts[0].total_seconds() == 1800 and "30 мин" in notes[0]
+    cfg.control_music = False
+    assert await cog.do_actions(vasya, [{"type": "music", "do": "skip"}], cfg, None) == []

@@ -529,6 +529,18 @@ class Music(commands.Cog):
 
     async def _play(self, interaction: discord.Interaction, guild: discord.Guild, member: discord.Member,
                     query: str) -> None:
+        text, idle = await self.enqueue(guild, member, query, interaction.channel_id)
+        embed = discord.Embed(description=text, color=COLOR_INFO)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed)
+        elif interaction.channel is not None:
+            await safe_send(interaction.channel, embed=embed)  # type: ignore[arg-type]
+        if idle:
+            await self._play_next(guild.id)
+
+    async def enqueue(self, guild: discord.Guild, member: discord.Member, query: str,
+                      text_channel_id: int | None) -> tuple[str, bool]:
+        """Ищет и ставит в очередь трек от имени участника. Возвращает (текст для чата, надо ли запускать)."""
         cfg = await self._check_enabled(guild)
         if not voice_available():
             raise UserFacingError(VOICE_MISSING)
@@ -548,7 +560,7 @@ class Music(commands.Cog):
             long = []
         vc = await self._connect(guild, member)
         player = self._player(guild.id, cfg.default_volume)
-        player.text_channel_id = interaction.channel_id
+        player.text_channel_id = text_channel_id
         added = player.queue.add(tracks, cfg.max_queue)
         if not added:
             raise UserFacingError(f"Очередь заполнена (максимум {cfg.max_queue} треков).")
@@ -560,13 +572,18 @@ class Music(commands.Cog):
                                                         if added < len(tracks) else "")
         if long:
             text += f"\nПропущено длинных треков: {len(long)}"
-        embed = discord.Embed(description=text, color=COLOR_INFO)
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed)
-        elif interaction.channel is not None:
-            await safe_send(interaction.channel, embed=embed)  # type: ignore[arg-type]
-        if idle:
-            await self._play_next(guild.id)
+        return text, idle
+
+    async def set_volume(self, guild_id: int, percent: int) -> None:
+        guild = self.bot.get_guild(guild_id)
+        vc = self._voice(guild) if guild else None
+        player = self.players.get(guild_id)
+        if vc is None or player is None:
+            raise UserFacingError("Сейчас ничего не играет.")
+        player.queue.volume = max(1, min(200, percent))
+        if isinstance(vc.source, discord.PCMVolumeTransformer):
+            vc.source.volume = player.queue.volume / 100
+        await self._refresh_np(guild_id)
 
     async def _simple(self, interaction: discord.Interaction, action: str, done: str, dj: bool = True) -> None:
         guild, member = require_guild(interaction)

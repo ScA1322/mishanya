@@ -39,7 +39,7 @@ def parse_actions(raw: str) -> dict:
     """Ответ «мозга»: {"reply": str, "offense": 0..3, "move": [{"who", "to"}]}. Не-JSON — это просто реплика."""
     data = parse_json(raw)
     if data is None:
-        return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "move": []}
+        return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "actions": []}
     try:
         offense = max(0, min(3, int(data.get("offense") or 0)))
     except (TypeError, ValueError):
@@ -48,28 +48,53 @@ def parse_actions(raw: str) -> dict:
         mute = max(1, min(40320, int(data.get("mute_minutes")))) if data.get("mute_minutes") else None
     except (TypeError, ValueError):
         mute = None
-    moves = data.get("move") or []
-    if isinstance(moves, dict):
-        moves = [moves]
-    moves = [{"who": str(m.get("who", "")).strip()[:100], "to": str(m.get("to", "")).strip()[:100]}
-             for m in moves if isinstance(m, dict) and m.get("who") and m.get("to")][:10]
+    actions = data.get("actions") or []
+    if isinstance(actions, dict):
+        actions = [actions]
+    moves = data.get("move") or []  # старый формат
+    actions = list(actions) + [{"type": "move", **m} for m in ([moves] if isinstance(moves, dict) else moves)
+                               if isinstance(m, dict)]
+    clean = []
+    for a in actions:
+        if not isinstance(a, dict) or not str(a.get("type") or "").strip():
+            continue
+        item = {}
+        for k, v in list(a.items())[:8]:
+            if isinstance(v, bool | int | float) or v is None:
+                item[str(k)[:20]] = v
+            else:
+                item[str(k)[:20]] = str(v).strip()[:200]
+        item["type"] = str(item["type"]).lower()
+        clean.append(item)
     return {"reply": str(data.get("reply") or "").strip(), "offense": offense,
             "offense_reason": str(data.get("offense_reason") or "").strip()[:200], "mute_minutes": mute,
-            "move": moves}
+            "actions": clean[:10]}
 
 
 ACTIONS_FORMAT = (
     "Ответь СТРОГО одним JSON-объектом без текста вокруг:\n"
     '{"reply": "твой ответ (пустая строка, если последнее сообщение явно не тебе и встревать незачем)", '
-    '"offense": 0, "offense_reason": "", "mute_minutes": 0, "move": []}\n'
+    '"offense": 0, "offense_reason": "", "mute_minutes": 0, "actions": []}\n'
     "offense — насколько последнее сообщение издевается над тобой или оскорбляет ТЕБЯ лично: 0 — нормально или "
     "обычный дружеский мат, 1 — подкол или стёб, 2 — настоящее оскорбление или унижение, 3 — жёсткая травля. "
     "Оскорбления других людей, мат в воздух и шутки не про тебя — это 0. offense_reason — если offense > 0, "
     "коротко, за что обиделся (например «назвал тупым ботом»). mute_minutes — если offense > 0, сам реши, на "
     "сколько минут замутить: за мелкий подкол пара минут, за оскорбление 10–30, за травлю часы.\n"
-    'move — только если автор последнего сообщения прямо просит перекинуть кого-то в другой голосовой канал: '
-    '[{"who": "имя участника или «я», если просит перекинуть себя", "to": "название голосового канала"}]. '
-    "Иначе пустой список. Не выдумывай каналы — бери из списка голосовых каналов."
+    "actions — что ты делаешь на сервере. У тебя есть настоящая власть, ты не просто болтаешь: если просят что-то "
+    "сделать, сам решай — выполнить, отказать или сделать по-своему (ты Император). Можешь и сам, без просьбы, "
+    "например вырубить надоевшую музыку или замутить надоеду. Если делаешь — обязательно добавь действие, иначе "
+    "ничего не произойдёт. Не пиши в reply, что сделал, если не добавил действие. Список (who — имя участника или "
+    "«я» про автора сообщения):\n"
+    '{"type": "music", "do": "play|pause|resume|skip|stop|leave|shuffle|loop|volume", "query": "что включить '
+    '(для play)", "volume": 1-200 (для volume)}\n'
+    '{"type": "move", "who": "…", "to": "голосовой канал"}\n'
+    '{"type": "disconnect", "who": "…"} — выкинуть из голосового канала\n'
+    '{"type": "voice_mute", "who": "…", "on": true/false} — выключить или вернуть микрофон в войсе\n'
+    '{"type": "timeout", "who": "…", "minutes": 0-40320} — мут в чате, 0 — снять\n'
+    '{"type": "nick", "who": "…", "name": "новый ник"} — пустое имя сбрасывает ник\n'
+    '{"type": "role", "who": "…", "role": "название роли", "give": true/false}\n'
+    '{"type": "purge", "count": 1-50} — удалить последние сообщения в этом канале\n'
+    "Каналы и людей бери из списков выше, не выдумывай. Если ничего не делаешь — пустой список."
 )
 
 

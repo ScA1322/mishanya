@@ -47,7 +47,7 @@ REQUIRED_PERMISSIONS = discord.Permissions(
     view_channel=True, send_messages=True, embed_links=True, attach_files=True, read_message_history=True,
     add_reactions=True, manage_messages=True, manage_roles=True, manage_channels=True, kick_members=True,
     ban_members=True, moderate_members=True, manage_nicknames=True, view_audit_log=True,
-    send_messages_in_threads=True, connect=True, speak=True, move_members=True,
+    send_messages_in_threads=True, connect=True, speak=True, move_members=True, mute_members=True,
 )
 
 

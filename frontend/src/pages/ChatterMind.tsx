@@ -11,6 +11,7 @@ export interface MindConfig {
   punish_enabled: boolean; punish_min_level: number; punish_mute_minutes: number; punish_remove_roles: boolean;
   apology_channel_id: string | null; punish_exempt_roles: string[];
   move_enabled: boolean; move_others_requires_permission: boolean;
+  control_music: boolean; control_moderation: boolean; control_roles: boolean;
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
   report_inactive_days: number; gossip_hours: number;
   voice_triggers: VoiceTrigger[]; trigger_cooldown_minutes: number;
@@ -161,10 +162,14 @@ export function GrudgeCard<C extends MindConfig>({ guildId, d, set }: { guildId:
 
 export function MoveCard<C extends MindConfig>({ d, set }: { d: C; set: Setter<C> }) {
   return (
-    <Card title="Перекидывать по голосовым каналам" subtitle="«Император, перекинь меня в Курилку» в чате или голосом — бот переместит. Нужно право «Перемещать участников».">
-      <ToggleRow title="Перекидывать по просьбе" checked={d.move_enabled} onChange={(v) => set("move_enabled", v)} />
-      <ToggleRow title="Чужих — только по просьбе тех, у кого есть право перемещать" hint="Иначе любой сможет утаскивать кого угодно. Себя может попросить перекинуть каждый (если ему можно в тот канал)"
-        checked={d.move_others_requires_permission} onChange={(v) => set("move_others_requires_permission", v)} />
+    <Card title="Власть бота" subtitle="Бот сам решает, что делать на сервере: по просьбе в чате или голосом («император, выруби музыку») — или по своей воле. Может и отказать. Владельца, администраторов и тех, чья роль выше роли бота, он не трогает; роли с админскими правами не раздаёт; банить и кикать не умеет.">
+      <ToggleRow title="Музыка" hint="Включить трек, пауза, пропуск, стоп, громкость, повтор, перемешать" checked={d.control_music} onChange={(v) => set("control_music", v)} />
+      <ToggleRow title="Голосовые каналы" hint="Перекинуть в другой канал, выкинуть из войса, выключить микрофон. Нужно право «Перемещать участников» и «Отключать микрофон»" checked={d.move_enabled} onChange={(v) => set("move_enabled", v)} />
+      {d.move_enabled && <ToggleRow title="Чужих перекидывать — только по просьбе тех, у кого есть право перемещать" hint="Выключено — бот сам решает, кого куда утащить"
+        checked={d.move_others_requires_permission} onChange={(v) => set("move_others_requires_permission", v)} />}
+      <ToggleRow title="Модерация" hint="Мут в чате и снятие мута, смена ника, удаление последних сообщений (до 50)" checked={d.control_moderation} onChange={(v) => set("control_moderation", v)} />
+      <ToggleRow title="Роли" hint="Выдать или забрать роль ниже роли бота (кроме ролей с админскими правами)" checked={d.control_roles} onChange={(v) => set("control_roles", v)} />
+      <div className="small muted">Боту нужны права: «Управлять ролями», «Управлять никнеймами», «Отправлять участников подумать», «Управлять сообщениями», «Перемещать участников», «Отключать участникам микрофон».</div>
     </Card>
   );
 }

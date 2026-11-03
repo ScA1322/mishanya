@@ -22,6 +22,7 @@ from ...services.chatter import ChatterError, clean_reply, format_history, gener
 from ...services.mind import ACTIONS_FORMAT, best_match, normalize, open_steam_game, parse_actions, parse_json, \
     trigger_matches
 from ..client import MishanyaBot
+from ..utils import UserFacingError
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +32,17 @@ LEARN_IDLE_SECONDS = 1800  # или прошло столько времени �
 APOLOGY_RE = re.compile(r"извин|прост[иь]|прощени|сорр?и|сорян|каюсь|прошу пощад", re.I)
 ADMIT_RE = re.compile(r"винова|был неправ|была неправ|не прав|моя вина|я зря|зря я|перегнул|погорячил|признаю|"
                       r"не должен был|не стоило", re.I)
+# Роли с такими правами бот сам не выдаёт, кто бы ни просил.
+DANGEROUS_PERMS = discord.Permissions(administrator=True, manage_guild=True, manage_roles=True, ban_members=True,
+                                      kick_members=True, manage_channels=True, manage_webhooks=True,
+                                      mention_everyone=True, moderate_members=True, manage_messages=True)
 DEFAULT_MUTE = {1: 5, 2: 15, 3: 60}  # минут, если модель сама не назвала срок
 SELF_WORDS = {"я", "меня", "мне", "себя", "сам", "самого"}
+
+
+def _score_self(who: str, requester: discord.Member) -> bool:
+    n = normalize(who)
+    return bool(n) and n in (normalize(requester.display_name), normalize(requester.name))
 
 
 def fmt_minutes(m: int) -> str:
@@ -170,11 +180,23 @@ class Mind(commands.Cog):
             chans.append(f"«{ch.name}»" + (f" (там: {people})" if people else ""))
         if chans:
             lines.append("Голосовые каналы: " + "; ".join(chans))
+        music = self.bot.get_cog("Music")
+        if music is not None:
+            st = music.state(guild.id)  # type: ignore[attr-defined]
+            cur = st.get("current")
+            if cur:
+                lines.append(f"Музыка: {'на паузе' if st.get('paused') else 'играет'} «{cur.get('title')}», "
+                             f"в очереди {len(st.get('queue') or [])}, громкость {st.get('volume')}%")
+            else:
+                lines.append("Музыка сейчас не играет.")
+        roles = [r.name for r in reversed(guild.roles) if not r.is_default() and not r.managed][:30]
+        if roles:
+            lines.append("Роли сервера: " + ", ".join(roles))
         return "\n".join(lines)
 
     async def brain(self, guild: discord.Guild, author: discord.Member | None, cfg: ChatterConfig, *,
                     history: str, channel_name: str, task: str, images: list[str] | None = None,
-                    voice: bool = False) -> tuple[str, list[str]]:
+                    voice: bool = False, channel: discord.abc.Messageable | None = None) -> tuple[str, list[str]]:
         """Ответ модели + выполнение действий. Возвращает (реплика, заметки о сделанном)."""
         me = guild.me.display_name
         ids = [author.id] if author else []
@@ -191,8 +213,8 @@ class Mind(commands.Cog):
                                      result["mute_minutes"])
             if note:
                 notes.append(note)
-        if author is not None and result["move"]:
-            notes += await self.do_moves(author, result["move"], cfg)
+        if author is not None and result["actions"]:
+            notes += await self.do_actions(author, result["actions"], cfg, channel)
         return reply, notes
 
     # ------------------------------------------------------------ обиды
@@ -335,6 +357,150 @@ class Mind(commands.Cog):
                 pass
         log.info("Обида снята: %s, возвращено ролей %d", member, restored)
         return restored
+
+    # ------------------------------------------------------------ действия на сервере
+
+    def _find_member(self, guild: discord.Guild, requester: discord.Member, who: str) -> discord.Member | None:
+        if normalize(who) in SELF_WORDS or _score_self(who, requester):
+            return requester
+        humans = [m for m in guild.members if not m.bot]
+        return best_match(who, humans, lambda m: (m.display_name, m.name, m.global_name or ""))  # type: ignore[return-value]
+
+    def _protected(self, member: discord.Member) -> str | None:
+        """Кого бот не трогает: владельца, админов, тех, кто выше него, и себя."""
+        guild, me = member.guild, member.guild.me
+        if member.id == me.id:
+            return "себя не трогаю"
+        if member.id == guild.owner_id or member.guild_permissions.administrator:
+            return f"{member.display_name} — владелец или админ, его не трогаю"
+        if member.top_role >= me.top_role:
+            return f"роль {member.display_name} выше моей"
+        return None
+
+    async def do_actions(self, requester: discord.Member, actions: list[dict], cfg: ChatterConfig,
+                         channel: discord.abc.Messageable | None) -> list[str]:
+        notes: list[str] = []
+        for a in actions:
+            kind = a.get("type")
+            try:
+                if kind == "move":
+                    notes += await self.do_moves(requester, [{"who": str(a.get("who", "")), "to": str(a.get("to", ""))}], cfg)
+                elif kind == "music":
+                    note = await self._music(requester, a, cfg, channel)
+                    if note:
+                        notes.append(note)
+                elif kind in ("disconnect", "voice_mute", "timeout", "nick", "role"):
+                    note = await self._member_action(requester, kind, a, cfg)
+                    if note:
+                        notes.append(note)
+                elif kind == "purge":
+                    note = await self._purge(requester, a, cfg, channel)
+                    if note:
+                        notes.append(note)
+            except UserFacingError as exc:
+                notes.append(f"⚠️ {exc}")
+            except discord.HTTPException as exc:
+                notes.append(f"⚠️ Discord не дал: {exc.text or exc}")
+            except Exception:  # noqa: BLE001
+                log.exception("Действие %s", a)
+        return notes
+
+    async def _music(self, requester: discord.Member, a: dict, cfg: ChatterConfig,
+                     channel: discord.abc.Messageable | None) -> str | None:
+        if not cfg.control_music:
+            return None
+        music = self.bot.get_cog("Music")
+        if music is None:
+            return None
+        guild = requester.guild
+        do = str(a.get("do") or "").lower()
+        log.info("Музыка по решению бота: %s (%s) — попросил %s", do, a.get("query") or a.get("volume") or "", requester)
+        if do == "play":
+            query = str(a.get("query") or "").strip()
+            if not query:
+                return None
+            text, idle = await music.enqueue(guild, requester, query, getattr(channel, "id", None))  # type: ignore[attr-defined]
+            if idle:
+                await music._play_next(guild.id)  # type: ignore[attr-defined]  # noqa: SLF001
+            return text
+        if do == "volume":
+            try:
+                percent = int(a.get("volume") or 0)
+            except (TypeError, ValueError):
+                return None
+            await music.set_volume(guild.id, percent)  # type: ignore[attr-defined]
+            return f"🔊 Громкость: {max(1, min(200, percent))}%"
+        names = {"pause": "⏸️ Пауза", "resume": "▶️ Продолжаю", "skip": "⏭️ Пропустил", "stop": "⏹️ Вырубил музыку",
+                 "leave": "👋 Ушёл из войса", "shuffle": "🔀 Перемешал очередь", "loop": "🔁 Сменил повтор"}
+        if do not in names:
+            return None
+        await music.control(guild.id, do, by=f"{guild.me.display_name} (попросил {requester.display_name})")  # type: ignore[attr-defined]
+        return names[do]
+
+    async def _member_action(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig) -> str | None:
+        voice_kind = kind in ("disconnect", "voice_mute")
+        if (voice_kind and not cfg.move_enabled) or (kind in ("timeout", "nick") and not cfg.control_moderation) \
+                or (kind == "role" and not cfg.control_roles):
+            return None
+        guild, me = requester.guild, requester.guild.me
+        who = self._find_member(guild, requester, str(a.get("who") or ""))
+        if who is None:
+            return f"⚠️ Не понял, кто такой «{a.get('who')}»."
+        why = self._protected(who)
+        if why:
+            return f"⚠️ Не могу: {why}."
+        reason = f"Mishanya: решил сам (попросил {requester})"
+        log.info("Действие бота: %s → %s (%s), попросил %s", kind, who, a, requester)
+        if kind == "disconnect":
+            if not (who.voice and who.voice.channel):
+                return f"⚠️ {who.display_name} не в войсе."
+            await who.move_to(None, reason=reason)
+            return f"🚪 Выкинул **{who.display_name}** из войса."
+        if kind == "voice_mute":
+            on = a.get("on") is not False
+            await who.edit(mute=on, reason=reason)
+            return f"🔇 Выключил микрофон **{who.display_name}**." if on else f"🎙️ Вернул микрофон **{who.display_name}**."
+        if kind == "timeout":
+            try:
+                minutes = max(0, min(40320, int(a.get("minutes") or 0)))
+            except (TypeError, ValueError):
+                minutes = 10
+            if not minutes:
+                await who.timeout(None, reason=reason)
+                return f"🔓 Снял мут с **{who.display_name}**."
+            await who.timeout(timedelta(minutes=minutes), reason=reason)
+            return f"⛓️ Мут **{who.display_name}** на {fmt_minutes(minutes)}."
+        if kind == "nick":
+            name = str(a.get("name") or "").strip()[:32] or None
+            await who.edit(nick=name, reason=reason)
+            return f"✏️ Теперь **{who.name}** зовут «{name}»." if name else f"✏️ Сбросил ник **{who.display_name}**."
+        if kind == "role":
+            role = best_match(str(a.get("role") or ""), [r for r in guild.roles if not r.is_default()],
+                              lambda r: (r.name,))
+            if role is None:
+                return f"⚠️ Не нашёл роль «{a.get('role')}»."
+            if role.managed or role >= me.top_role:
+                return f"⚠️ Роль «{role.name}» выше моей или служебная."
+            if role.permissions.value & DANGEROUS_PERMS.value:
+                return f"⚠️ Роль «{role.name}» даёт админские права — такие сам не раздаю."
+            if a.get("give") is False:
+                await who.remove_roles(role, reason=reason)
+                return f"➖ Забрал у **{who.display_name}** роль «{role.name}»."
+            await who.add_roles(role, reason=reason)
+            return f"➕ Выдал **{who.display_name}** роль «{role.name}»."
+        return None
+
+    async def _purge(self, requester: discord.Member, a: dict, cfg: ChatterConfig,
+                     channel: discord.abc.Messageable | None) -> str | None:
+        if not cfg.control_moderation or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return None
+        try:
+            count = max(1, min(50, int(a.get("count") or 0)))
+        except (TypeError, ValueError):
+            return None
+        log.info("Действие бота: удаляю %d сообщений в #%s, попросил %s", count, channel.name, requester)
+        deleted = await channel.purge(limit=count + 1, reason=f"Mishanya: попросил {requester}")
+        return f"🧹 Удалил сообщений: {max(0, len(deleted) - 1)}."
 
     # ------------------------------------------------------------ перемещение по голосовым каналам
 
