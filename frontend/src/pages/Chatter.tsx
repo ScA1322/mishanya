@@ -4,7 +4,7 @@ import { errorText, post, postBlob, put } from "../api";
 import { useMeta } from "../App";
 import { useApi, useModuleConfig, useUnsavedWarning } from "../hooks";
 import { Icon } from "../icons";
-import { CharacterCard, ConfidantsCard, FamilyCard, PcCard, DialogCard, GrudgeCard, MemoryCard, type MindConfig, ModelsCard, MoveCard, TriggersCard } from "./ChatterMind";
+import { CharacterCard, ConfidantsCard, FamilyCard, PcCard, TelegramCard, DialogCard, GrudgeCard, MemoryCard, type MindConfig, ModelsCard, MoveCard, TriggersCard } from "./ChatterMind";
 import { Card, ChannelSelect, ErrorBox, Field, Loading, MultiChannelSelect, NumberInput, PageHeader, Picker, SaveBar, ToggleRow, useResources, useToast } from "../ui";
 
 interface ChatterConfig extends MindConfig {
@@ -452,6 +452,8 @@ export default function Chatter() {
         <FamilyCard guildId={guildId!} d={d} set={set} />
 
         <PcCard guildId={guildId!} d={d} set={set} />
+
+        <TelegramCard />
 
         <MemoryCard guildId={guildId!} d={d} set={set} />
 

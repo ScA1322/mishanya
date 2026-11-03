@@ -441,7 +441,8 @@ class Mind(commands.Cog):
         if author is not None:
             if trusted:
                 context += ("\nОн свой: ему ты рассказываешь абсолютно всё без утайки — что слышал и видел, кто что "
-                            "говорил и делал, что знаешь о людях.")
+                            "говорил и делал, что знаешь о людях. По его приказу можешь работать с Telegram владельца "
+                            "(tg_unread, tg_read, tg_send).")
                 contacts = await self.dm_contacts_text()
                 if contacts:
                     context += f"\nКто писал тебе в личку (не свои):\n{contacts}"
@@ -748,6 +749,10 @@ class Mind(commands.Cog):
                     note = await self._timer(requester, a, channel)
                     if note:
                         notes.append(note)
+                elif kind in ("tg_unread", "tg_read", "tg_send"):
+                    note = await self._telegram(requester, kind, a, cfg, channel)
+                    if note:
+                        notes.append(note)
                 elif kind in ("pc_open", "pc_close"):
                     note = await self._pc_action(requester, kind, a, cfg)
                     if note:
@@ -1002,6 +1007,49 @@ class Mind(commands.Cog):
             return f"⚠️ {who.display_name} закрыл личку — не дошло."
         log.info("Передал в личку %s по просьбе %s: %s", who, requester, text[:200])
         return f"📨 Передал **{who.display_name}** в личку."
+
+    async def _telegram(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig,
+                        channel: discord.abc.Messageable | None) -> str | None:
+        """Telegram владельца — только своим, и ответ только им в личку: в общий чат ничего не утекает."""
+        from ...services.telegram import TelegramError
+
+        if not self.is_trusted(requester.id, cfg, requester):
+            log.info("Telegram: %s просил %s, но он не свой", requester, kind)
+            return "🚫 Telegram владельца — не твоё дело."
+        tg = self.app.telegram
+        try:
+            if kind == "tg_unread":
+                rows = await tg.unread()
+                body = "\n".join(f"• **{r['chat']}** — непрочитанных {r['unread']}, {r['date']}: «{r['last']}»" for r in rows) \
+                    or "Непрочитанных нет — никто не пишет."
+                text = f"📬 **Telegram — кто пишет:**\n{body}"
+            elif kind == "tg_read":
+                try:
+                    count = int(a.get("count") or 10)
+                except (TypeError, ValueError):
+                    count = 10
+                title, msgs = await tg.read(str(a.get("chat") or ""), count)
+                body = "\n".join(f"`{m['date']}` **{m['from']}**: {m['text']}" for m in msgs) or "Сообщений нет."
+                text = f"📖 **Telegram — {title}:**\n{body}"
+            else:
+                what = str(a.get("text") or "").strip()
+                if not what:
+                    return None
+                title = await tg.send(str(a.get("chat") or ""), what)
+                text = f"📨 Отправил в Telegram **{title}**: «{what[:300]}»"
+        except TelegramError as exc:
+            text = f"⚠️ {exc}"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Telegram")
+            text = f"⚠️ Telegram не ответил: {exc}"
+        if channel is not None and not isinstance(channel, discord.DMChannel):
+            for chunk in [text[i:i + 1900] for i in range(0, len(text), 1900)][:5]:
+                try:
+                    await requester.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException:
+                    return "⚠️ Не могу написать тебе в личку — открой её, и повтори."
+            return "📨 Ответ по Telegram — у тебя в личке."
+        return text[:1900]
 
     async def _pc_action(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig) -> str | None:
         if not cfg.pc_control:
@@ -1599,7 +1647,7 @@ class Mind(commands.Cog):
         try:
             async with message.channel.typing():
                 text, notes = await self.brain(guild, member, cfg, history=format_history(history, me),
-                                               channel_name="личка", extra_context=context,
+                                               channel_name="личка", extra_context=context, channel=message.channel,
                                                images=await collect_images(message, look_back=False),
                                                task="Ответь на последнее сообщение в личке, в своём стиле.")
         except ChatterError as exc:

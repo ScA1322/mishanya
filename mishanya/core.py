@@ -22,6 +22,7 @@ from .services.leveling import LevelingService
 from .services.menus import MenuService
 from .services import tts
 from .services.mind import MindService
+from .services.telegram import TelegramService
 from .services.posts import PostService
 from .services.moderation import ModerationService
 from .services.reminders import ReminderService
@@ -133,5 +134,6 @@ class App:
         self.mind = MindService(self.db)
         tts.configure(self.settings)
         self.posts = PostService(self.db, self.settings.data_dir / "posts")
+        self.telegram = TelegramService(self.settings.data_dir, self.settings)
         self.chatter_error: str | None = None  # последняя ошибка DeepSeek (для панели)
         self.updater = UpdateService(self.settings.base_dir, self.settings.db_path, self.settings.backup_dir)

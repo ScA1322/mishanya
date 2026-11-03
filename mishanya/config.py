@@ -60,6 +60,9 @@ class Settings:
     tts_api_key: str = ""
     tts_base_url: str = ""
     tts_model: str = "tts-1"
+    # Telegram владельца (my.telegram.org → API development tools)
+    telegram_api_id: str = ""
+    telegram_api_hash: str = ""
     vision_api_key: str = ""
     vision_base_url: str = ""
     env_path: Path = field(default_factory=lambda: BASE_DIR / ".env")
@@ -156,6 +159,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         tts_api_key=os.getenv("TTS_API_KEY", "").strip(),
         tts_base_url=os.getenv("TTS_BASE_URL", "").strip().rstrip("/"),
         tts_model=os.getenv("TTS_MODEL", "").strip() or "tts-1",
+        telegram_api_id=os.getenv("TELEGRAM_API_ID", "").strip(),
+        telegram_api_hash=os.getenv("TELEGRAM_API_HASH", "").strip(),
         vision_api_key=os.getenv("VISION_API_KEY", "").strip(),
         vision_base_url=os.getenv("VISION_BASE_URL", "").strip().rstrip("/"),
         env_path=env_path,

@@ -723,3 +723,43 @@ async def test_dm_bridge_audience(app, monkeypatch):
     stranger = SimpleNamespace(id=2, name="spy", display_name="Шпион")
     await cog.handle_dm(SimpleNamespace(author=stranger, content="я с другого сервера", attachments=[], channel=None))
     assert sent[1] == ["🗣️ **@spy**: я с другого сервера"]
+
+
+async def test_telegram_only_for_trusted_and_only_in_dm(app, monkeypatch):
+    """Telegram владельца: чужим — отказ; своим — ответ в личку, а в общий чат только «смотри в личке»."""
+    import discord as _d
+
+    cog, _, _ = _cog(app, monkeypatch, [])
+    app.settings.owner_id = None
+
+    class FakeTg:
+        async def unread(self):
+            return [{"chat": "Вася (@vasya)", "unread": 3, "last": "ты где?", "date": "04.11 12:00"}]
+
+        async def send(self, chat, text):
+            return "Петя"
+
+    app.telegram = FakeTg()
+    cfg = ChatterConfig(confidants=["999999999999999999"])
+    stranger = SimpleNamespace(id=5, name="spy")
+    assert "не твоё дело" in await cog._telegram(stranger, "tg_unread", {}, cfg, None)
+    dms = []
+
+    async def send(text, **kw):  # noqa: ANN001, ANN003
+        dms.append(text)
+
+    boss = SimpleNamespace(id=999999999999999999, name="boss", send=send)
+    public = SimpleNamespace(id=1)  # обычный канал сервера
+    assert await cog._telegram(boss, "tg_unread", {}, cfg, public) == "📨 Ответ по Telegram — у тебя в личке."
+    assert "Вася (@vasya)" in dms[0] and "ты где?" in dms[0]
+    dm_channel = _d.DMChannel.__new__(_d.DMChannel)
+    note = await cog._telegram(boss, "tg_send", {"chat": "петя", "text": "опоздаю"}, cfg, dm_channel)
+    assert note == "📨 Отправил в Telegram **Петя**: «опоздаю»"
+
+
+async def test_telegram_panel_api(authed, app):
+    st = (await authed.get("/api/telegram/status")).json()
+    assert st["configured"] is False and st["authorized"] is False
+    assert (await authed.put("/api/telegram/keys", json={"api_id": "12", "api_hash": "x"})).status_code == 422
+    r = await authed.put("/api/telegram/keys", json={"api_id": "123456", "api_hash": "a" * 32})
+    assert r.status_code == 200 and "TELEGRAM_API_ID=123456" in app.settings.env_path.read_text(encoding="utf-8")

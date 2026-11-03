@@ -211,6 +211,73 @@ async def set_ai_models(body: AiModelsIn, request: Request) -> dict:
     return {"base_url": s.deepseek_base_url, "model": s.deepseek_model, "vision_model": s.vision_model}
 
 
+# ---------------------------------------------------------------- Telegram владельца
+
+class TgKeysIn(BaseModel):
+    api_id: str = Field(pattern=r"^\d{3,12}$")
+    api_hash: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class TgCodeIn(BaseModel):
+    phone: str = Field(pattern=r"^\+?\d{7,16}$")
+
+
+class TgLoginIn(BaseModel):
+    code: str = Field(pattern=r"^\d{3,8}$")
+    password: str = Field("", max_length=200)
+
+
+async def _tg(call):  # noqa: ANN001, ANN202
+    from ...services.telegram import TelegramError
+
+    try:
+        return await call
+    except TelegramError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Telegram: {exc}") from None
+
+
+@router.get("/telegram/status")
+async def telegram_status(request: Request) -> dict:
+    return await get_app(request).telegram.status()
+
+
+@router.put("/telegram/keys")
+async def telegram_keys(body: TgKeysIn, request: Request) -> dict:
+    """api_id и api_hash с my.telegram.org — в .env."""
+    app = get_app(request)
+    try:
+        await asyncio.to_thread(set_env_value, app.settings.env_path, "TELEGRAM_API_ID", body.api_id)
+        await asyncio.to_thread(set_env_value, app.settings.env_path, "TELEGRAM_API_HASH", body.api_hash)
+    except OSError as exc:
+        raise HTTPException(500, f"Не удалось записать .env: {exc}") from None
+    app.settings.telegram_api_id, app.settings.telegram_api_hash = body.api_id, body.api_hash
+    app.telegram.client = None
+    return await app.telegram.status()
+
+
+@router.post("/telegram/code")
+async def telegram_code(body: TgCodeIn, request: Request) -> dict:
+    tg = get_app(request).telegram
+    await _tg(tg.send_code(body.phone))
+    return await tg.status()
+
+
+@router.post("/telegram/login")
+async def telegram_login(body: TgLoginIn, request: Request) -> dict:
+    tg = get_app(request).telegram
+    await _tg(tg.sign_in(body.code, body.password))
+    return await tg.status()
+
+
+@router.post("/telegram/logout")
+async def telegram_logout(request: Request) -> dict:
+    tg = get_app(request).telegram
+    await _tg(tg.logout())
+    return await tg.status()
+
+
 @router.get("/logs/tail")
 async def logs_tail(request: Request, lines: int = 300) -> dict:
     """Последние строки data/mishanya.log — чтобы журнал можно было скопировать прямо из панели."""

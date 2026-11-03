@@ -435,3 +435,62 @@ function VisionTest() {
     </div>
   );
 }
+
+interface TgStatus { configured: boolean; authorized: boolean; me: string | null; waiting_code: boolean; error: string | null }
+
+export function TelegramCard() {
+  const toast = useToast();
+  const st = useApi<TgStatus>("/api/telegram/status", []);
+  const [keys, setKeys] = useState({ api_id: "", api_hash: "" });
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const run = async (fn: () => Promise<TgStatus>, ok?: string) => {
+    setBusy(true);
+    try { st.setData(await fn()); if (ok) toast("ok", ok); }
+    catch (e) { toast("err", errorText(e)); }
+    finally { setBusy(false); }
+  };
+  const d = st.data;
+  return (
+    <Card title="Telegram владельца" subtitle="Бот входит в ваш Telegram и по приказу своих людей (доверенные, семья, владелец) говорит, кто пишет, читает переписку и пишет сообщения от вашего имени. Ответы приходят только им в личку — в общий чат ничего не утекает. Чужим отказывает.">
+      <div className="alert alert-warn">Это полный доступ к вашему аккаунту Telegram. Сессия хранится только в папке data на компьютере с ботом. Отключить — кнопка «Выйти» ниже или «Устройства» в настройках Telegram.</div>
+      {d?.error && <div className="alert alert-err mt">{d.error}</div>}
+      {d?.authorized ? (
+        <div className="row mt">
+          <span className="badge badge-ok">подключён: {d.me}</span>
+          <span className="spacer" />
+          <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => run(() => post("/api/telegram/logout"), "Вышел из Telegram")}>Выйти</button>
+        </div>
+      ) : (
+        <div className="stack mt" style={{ gap: 12 }}>
+          {!d?.configured && (
+            <>
+              <div className="small muted">1. Зайдите на <a href="https://my.telegram.org/apps" target="_blank" rel="noreferrer">my.telegram.org → API development tools</a>, создайте приложение (любое название) и скопируйте api_id и api_hash.</div>
+              <div className="row">
+                <input className="input" style={{ maxWidth: 160 }} placeholder="api_id" value={keys.api_id} onChange={(e) => setKeys({ ...keys, api_id: e.target.value.trim() })} />
+                <input className="input" style={{ flex: 1 }} placeholder="api_hash" value={keys.api_hash} onChange={(e) => setKeys({ ...keys, api_hash: e.target.value.trim() })} />
+                <button className="btn btn-primary" disabled={busy || !keys.api_id || keys.api_hash.length !== 32} onClick={() => run(() => put("/api/telegram/keys", keys), "Сохранено")}>Сохранить</button>
+              </div>
+            </>
+          )}
+          {d?.configured && !d.waiting_code && (
+            <div className="row">
+              <input className="input" style={{ maxWidth: 240 }} placeholder="Телефон, например +79991234567" value={phone} onChange={(e) => setPhone(e.target.value.trim())} />
+              <button className="btn btn-primary" disabled={busy || phone.length < 8} onClick={() => run(() => post("/api/telegram/code", { phone }), "Код отправлен в Telegram")}>Получить код</button>
+            </div>
+          )}
+          {d?.waiting_code && (
+            <div className="row">
+              <input className="input" style={{ maxWidth: 140 }} placeholder="Код из Telegram" value={code} onChange={(e) => setCode(e.target.value.trim())} />
+              <input className="input" style={{ maxWidth: 240 }} type="password" autoComplete="off" placeholder="Облачный пароль (если есть)" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <button className="btn btn-primary" disabled={busy || code.length < 3} onClick={() => run(() => post("/api/telegram/login", { code, password }), "Telegram подключён")}>Войти</button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="small muted mt">Примеры: «импер, кто мне пишет в тг?», «прочитай последние сообщения от Васи в телеге», «напиши Пете в тг, что я опоздаю».</div>
+    </Card>
+  );
+}
