@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useApi } from "../hooks";
 import { Icon, type IconName } from "../icons";
 import { Card, Empty, ErrorBox, Loading, PageHeader, fmtBytes, fmtDate } from "../ui";
@@ -65,6 +65,45 @@ function uptime(s: number) {
   return d ? `${d} д ${h} ч` : h ? `${h} ч ${m} мин` : `${m} мин`;
 }
 
+const DECREES = [
+  "Указ №1: Император всегда прав. Указ №2: если Император не прав — см. указ №1.",
+  "Санитары в муте, таблетки пропиты, власть — в надёжных руках.",
+  "Каждое сообщение в этом чате читает Император. Каждое.",
+  "Помилование выдаётся только через покаяние. Искреннее.",
+  "Демократия была. Сейчас — Империя.",
+  "Император не спит. Император наблюдает.",
+  "Доверенные знают всё. Остальные знают своё место.",
+  "Кто назвал Императора «Импер» без права — тот уже осуждён.",
+];
+
+/** Шапка главной: аватар бота во вращающемся кольце, статус и «указ дня». */
+function EmperorHero({ s }: { s: Status }) {
+  const b = s.bot;
+  const [i, setI] = useState(() => Math.floor(Math.random() * DECREES.length));
+  useEffect(() => {
+    const t = setInterval(() => setI((x) => (x + 1) % DECREES.length), 9000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <section className="hero">
+      <div className="hero-avatar">
+        <div className="hero-ring" />
+        {b.avatar_url ? <img src={b.avatar_url} alt="" /> : <div className="hero-fallback">M</div>}
+        <span className="hero-crown" aria-hidden="true">♛</span>
+      </div>
+      <div className="hero-text">
+        <div className="hero-name">{b.user?.replace(/#0$/, "") ?? "Mishanya"}</div>
+        <div className="hero-status">
+          <span className={`dot ${b.connected ? "dot-ok" : b.error ? "dot-err" : "dot-warn"}`} />
+          {b.connected ? `Правит ${s.guilds.present} ${s.guilds.present === 1 ? "сервером" : "серверами"} · ${b.latency_ms ?? "—"} мс`
+            : b.error ? "Император не может войти в Discord" : "Император просыпается…"}
+        </div>
+        <div className="hero-decree" key={i}>📜 {DECREES[i]}</div>
+      </div>
+    </section>
+  );
+}
+
 export default function Home() {
   const { data, error, loading, reload } = useApi<Status>("/api/status");
   useEffect(() => {
@@ -85,6 +124,8 @@ export default function Home() {
     <>
       <PageHeader title="Главная" subtitle="Состояние Mishanya и последние события"
         actions={<button className="btn" onClick={reload}><Icon name="refresh" size={15} />Обновить</button>} />
+
+      <EmperorHero s={s} />
 
       {(!b.connected || s.guilds.present === 0) && <Onboarding s={s} />}
 
