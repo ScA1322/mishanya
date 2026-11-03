@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import random
 import logging
 import re
@@ -32,6 +33,58 @@ ALONE_LEAVE_SECONDS = 60
 LOOP_NAMES = {"off": "выключен", "track": "текущий трек", "queue": "вся очередь"}
 
 
+class Overlay:
+    """Голос бота поверх музыки: кадры речи подмешиваются в музыкальный поток, музыка на это время тише.
+    Живёт в плеере сервера и переживает смену треков; источник у плеера Discord при этом не подменяется."""
+
+    FRAME = 3840  # 20 мс стерео 48 кГц, 16 бит
+
+    def __init__(self, duck: float = 0.3):
+        import threading
+
+        self.duck = duck
+        self.frames: deque[bytes] = deque()
+        self.drained = threading.Event()
+        self.drained.set()
+
+    def add(self, pcm: bytes) -> None:
+        self.drained.clear()
+        for i in range(0, len(pcm), self.FRAME):
+            chunk = pcm[i:i + self.FRAME]
+            self.frames.append(chunk + b"\0" * (self.FRAME - len(chunk)))
+
+    def clear(self) -> None:
+        self.frames.clear()
+        self.drained.set()
+
+    def mix(self, music: bytes) -> bytes:
+        if not self.frames:
+            self.drained.set()
+            return music
+        try:
+            from ...services.stt import audioop
+        except ImportError:  # pragma: no cover
+            audioop = None
+        voice = self.frames.popleft()
+        if not self.frames:
+            self.drained.set()
+        if not music or audioop is None:
+            return voice
+        music = music[:self.FRAME] + b"\0" * (self.FRAME - len(music))
+        return audioop.add(audioop.mul(music, 2, self.duck), voice, 2)
+
+
+class MixedSource(discord.PCMVolumeTransformer):
+    """Музыкальный трек с возможностью подмешать голос бота (остаётся PCMVolumeTransformer — громкость работает)."""
+
+    def __init__(self, original: discord.AudioSource, volume: float, overlay: Overlay):
+        super().__init__(original, volume=volume)
+        self.overlay = overlay
+
+    def read(self) -> bytes:
+        return self.overlay.mix(super().read())
+
+
 class GuildPlayer:
     def __init__(self, guild_id: int, volume: int):
         self.guild_id = guild_id
@@ -44,6 +97,7 @@ class GuildPlayer:
         self.lock = asyncio.Lock()
         self.np_message: discord.Message | None = None  # сообщение «Сейчас играет» с кнопками
         self.last_action: str | None = None  # что последним сделали с плеером — видно всем под треком
+        self.overlay = Overlay()
 
     def cancel_idle(self) -> None:
         if self.idle_task is not None and not self.idle_task.done():
@@ -228,7 +282,7 @@ class Music(commands.Cog):
         async with player.lock:
             vc = self._voice(guild)
             if vc is None or vc.is_playing() or vc.is_paused():
-                return
+                return  # играет музыка — или бот сейчас говорит голосом (Listener запустит музыку после)
             for _ in range(5):  # несколько недоступных треков подряд пропускаем
                 if player.skip_requested and player.queue.loop == "track":
                     player.queue.current = None  # /skip при повторе трека — к следующему
@@ -246,7 +300,7 @@ class Music(commands.Cog):
                     audio = await asyncio.to_thread(
                         lambda: discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_executable(),
                                                        before_options=FFMPEG_BEFORE, options="-vn"))
-                    source = discord.PCMVolumeTransformer(audio, volume=player.queue.volume / 100)
+                    source = MixedSource(audio, player.queue.volume / 100, player.overlay)
                 except MusicError as exc:
                     await self._notify(guild, player, f"⚠️ Пропускаю «{track.title}»: {exc}")
                     player.queue.current = None
@@ -577,7 +631,8 @@ class Music(commands.Cog):
             long = []
         vc = await self._connect(guild, member)
         player = self._player(guild.id, cfg.default_volume)
-        player.text_channel_id = text_channel_id
+        voice_chat = member.voice.channel.id if member.voice and member.voice.channel else None
+        player.text_channel_id = text_channel_id or player.text_channel_id or voice_chat
         added = player.queue.add(tracks, cfg.max_queue)
         if not added:
             raise UserFacingError(f"Очередь заполнена (максимум {cfg.max_queue} треков).")

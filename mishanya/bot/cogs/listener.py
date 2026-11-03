@@ -34,6 +34,8 @@ DAVE_MAGIC = b"\xfa\xfa"  # маркер в конце кадра, зашифр�
 ALONE_LEAVE_SECONDS = 60
 MAX_PARALLEL_STT = 5
 FALLBACK_STT = "gpt-4o-transcribe"
+RESUME_PHRASES = ["Так вот, о чём я.", "Не перебивай Императора. Так вот.", "Короче, как я и говорил.",
+                  "Кхм. Продолжаю.", "Я ещё не закончил."]
 STALE_SECONDS = 12  # фраза ждала распознавания дольше — пропускаем: отвечать на старое бессмысленно
 FRAME = 3840  # 20 мс стерео 48 кГц, 16 бит
 SENTENCE_END = re.compile(r"[.!?…]+[»\")]*\s")  # конец предложения — можно отдавать в озвучку
@@ -109,49 +111,13 @@ class Session:
     replying: bool = False
     pending: tuple | None = None  # обращение, пришедшее, пока бот говорил: (участник, как обратились)
     heard_at: float = 0.0  # когда закончилась фраза, на которую отвечаем (для замера задержки)
+    unsaid: str = ""  # что бот не договорил, когда его перебили
+    resume_task: asyncio.Task | None = None
     last_decided: float = 0.0  # когда бот последний раз решал, влезать ли в разговор
     last_spoke: float = 0.0  # когда бот последний раз говорил
     heard_since: int = 0  # реплик людей с тех пор
     task: asyncio.Task | None = None
     error: str | None = None
-
-
-class DuckingMixer(discord.AudioSource):
-    """Голос бота поверх музыки: на время речи музыка приглушается, звуки смешиваются. Подменяет источник плеера."""
-
-    def __init__(self, music: discord.AudioSource, duck: float = 0.3):
-        import threading
-
-        self.music, self.duck = music, duck
-        self.frames: deque[bytes] = deque()
-        self.drained = threading.Event()
-
-    def add(self, pcm: bytes) -> None:
-        self.drained.clear()
-        for i in range(0, len(pcm), FRAME):
-            chunk = pcm[i:i + FRAME]
-            self.frames.append(chunk + b"\0" * (FRAME - len(chunk)))
-
-    def read(self) -> bytes:
-        from ...services.stt import audioop
-
-        m = self.music.read()
-        if not self.frames:
-            self.drained.set()
-            return m
-        t = self.frames.popleft()
-        if not self.frames:
-            self.drained.set()
-        if not m or audioop is None:
-            return t
-        m = m[:FRAME] + b"\0" * (FRAME - len(m))
-        return audioop.add(audioop.mul(m, 2, self.duck), t, 2)
-
-    def is_opus(self) -> bool:
-        return False
-
-    def cleanup(self) -> None:
-        self.music.cleanup()
 
 
 async def decode_pcm(data: bytes, opts: str) -> bytes:
@@ -387,7 +353,7 @@ class Listener(commands.Cog):
             sentence = sentence.strip()
             if sentence:
                 buf["said"] += sentence + " "
-                queue.put_nowait(asyncio.create_task(speak(sentence, cfg)))
+                queue.put_nowait((sentence, asyncio.create_task(speak(sentence, cfg))))
 
         async def on_reply(piece: str) -> None:
             if stats["first_text"] is None:
@@ -402,6 +368,7 @@ class Listener(commands.Cog):
 
         text: str | None = None
         ai_failed = not (cfg.use_ai and s.deepseek_api_key)
+        unsaid, session.unsaid = session.unsaid, ""  # новая реплика сама вернётся к недосказанному
         try:
             if cfg.use_ai and s.deepseek_api_key:
                 dialog = "\n".join(f"{n}: {t}" for n, t in session.dialog)
@@ -414,6 +381,8 @@ class Listener(commands.Cog):
                            "оставь reply пустым, молчать нормально, не влезай ради галочки. " if interject else
                            "Последняя реплика обращена к тебе — ответь на неё. ")
                         + (self.bot.get_cog("Mind").alias_scold(cfg) + " " if how == "alias_bad" else "")  # type: ignore[union-attr]
+                        + (f"Тебя только что перебили — ты не договорил: «{unsaid}». Коротко отреагируй на то, что "
+                           "сказали, и вернись к своей мысли («так вот…»), если она ещё к месту. " if unsaid else "")
                         + "Говори вслух 1–2 короткими фразами (до 200 символов) — ответ озвучивается голосом, поэтому "
                         "без смайликов, разметки и ссылок.")
                 mind = self.bot.get_cog("Mind")
@@ -451,6 +420,9 @@ class Listener(commands.Cog):
         finally:
             queue.put_nowait(None)
         spoke = await player
+        if session.unsaid:  # перебили — договорим, когда все замолчат (если никто не спросит что-то новое)
+            if session.resume_task is None or session.resume_task.done():
+                session.resume_task = asyncio.create_task(self._resume_later(guild, session, cfg))
         if spoke and stats["first_audio"]:
             ft = stats["first_text"]
             log.info("Слушание: голос через %.1f с после конца фразы (распознавание %.1f с, ИИ до первых слов %s, "
@@ -462,25 +434,30 @@ class Listener(commands.Cog):
     async def _play_queue(self, vc, queue: asyncio.Queue, cfg: ChatterConfig, stats: dict,  # noqa: ANN001
                           session: Session | None = None) -> bool:
         """Проигрывает озвученные фразы строго по порядку, пока в очереди не окажется None. Не перебивает: ждёт,
-        пока люди договорят; если человек продолжил мысль — бросает устаревший ответ; если бота перебили — замолкает."""
+        пока люди договорят; если человек продолжил мысль — бросает устаревший ответ; если бота перебили — замолкает
+        и запоминает, что не договорил. Поверх музыки говорит, подмешивая голос в музыкальный поток."""
         loop = asyncio.get_running_loop()
         spoke = False
-        dropped = False
 
-        async def drain() -> None:
+        async def drain(first: str | None = None) -> str:
+            """Выбросить оставшееся; вернуть текст, который так и не прозвучал."""
+            left = [first] if first else []
             while True:
-                job = await queue.get()
-                if job is None:
-                    return
-                job.cancel()
+                item = await queue.get()
+                if item is None:
+                    return " ".join(left).strip()
+                left.append(item[0])
+                item[1].cancel()
+
+        def interrupted() -> bool:
+            return (session is not None and cfg.listen_barge_in
+                    and session.collector.speaking(time.monotonic(), window=0.25, min_voiced=15))
 
         while True:
-            job = await queue.get()
-            if job is None:
+            item = await queue.get()
+            if item is None:
                 return spoke
-            if dropped:
-                job.cancel()
-                continue
+            sentence, job = item
             if session is not None and not spoke:
                 # Кто-то ещё говорит — ждём паузу (до 8 с), а не влезаем посреди фразы.
                 waited = time.monotonic()
@@ -489,7 +466,6 @@ class Listener(commands.Cog):
                 if session.pending is not None:  # человек договорил ещё что-то — ответим на всё сразу
                     log.info("Слушание: собеседник продолжил мысль — отвечу на всё целиком")
                     job.cancel()
-                    dropped = True
                     await drain()
                     return spoke
             try:
@@ -504,19 +480,25 @@ class Listener(commands.Cog):
             if stats["first_audio"] is None:
                 stats["first_audio"] = time.monotonic()
             opts = ffmpeg_options(engine, cfg.voice_rate)
-            if vc.is_playing():
-                # Играет музыка: говорим поверх неё, приглушив на время речи.
+            overlay = getattr(vc.source, "overlay", None) if vc.is_playing() else None
+            if overlay is not None:
+                # Играет музыка: подмешиваем голос в неё (музыка на это время тише).
                 pcm = await decode_pcm(data, opts)
-                if not pcm or not vc.is_playing():
+                if not pcm:
                     continue
-                mixer = vc.source if isinstance(vc.source, DuckingMixer) else DuckingMixer(vc.source)
-                mixer.add(pcm)
-                if vc.source is not mixer:
-                    vc.source = mixer
+                overlay.add(pcm)
                 spoke = True
-                await asyncio.to_thread(mixer.drained.wait, 60)
-                if vc.is_playing() and vc.source is mixer:
-                    vc.source = mixer.music
+                started = time.monotonic()
+                while not overlay.drained.is_set() and time.monotonic() - started < 60:
+                    await asyncio.sleep(0.1)
+                    if interrupted():
+                        overlay.clear()
+                        log.info("Слушание: меня перебили — замолкаю")
+                        if session is not None:
+                            session.unsaid = await drain(sentence)
+                        return spoke
+                continue
+            if vc.is_playing():  # звучит что-то чужое (не наша музыка) — не мешаем
                 continue
             done = asyncio.Event()
             source = await asyncio.to_thread(lambda d=data, o=opts: discord.FFmpegPCMAudio(
@@ -526,15 +508,62 @@ class Listener(commands.Cog):
             started = time.monotonic()
             while not done.is_set() and time.monotonic() - started < 60:
                 await asyncio.sleep(0.1)
-                # Перебили (говорят дольше ~0,3 с) — замолкаем и слушаем, как живой человек.
-                if session is not None and cfg.listen_barge_in and session.collector.speaking(
-                        time.monotonic(), window=0.25, min_voiced=15):
+                if interrupted():  # перебили (говорят дольше ~0,3 с) — замолкаем и слушаем
                     log.info("Слушание: меня перебили — замолкаю")
                     vc.stop()
-                    await drain()
+                    if session is not None:
+                        session.unsaid = await drain(sentence)
+                    await self._resume_music(vc)
                     return spoke
             if not done.is_set():
                 vc.stop()
+            await self._resume_music(vc)
+
+    async def _resume_music(self, vc) -> None:  # noqa: ANN001
+        """Пока бот говорил без музыки, мог подойти черёд следующего трека — запускаем его."""
+        music = self.bot.get_cog("Music")
+        guild = getattr(getattr(vc, "channel", None), "guild", None)
+        if music is not None and guild is not None and guild.id in getattr(music, "players", {}) \
+                and not vc.is_playing() and not vc.is_paused():
+            try:
+                await music._play_next(guild.id)  # type: ignore[attr-defined]  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                log.exception("Слушание: не удалось продолжить музыку")
+
+    async def _resume_later(self, guild: discord.Guild, session: Session, cfg: ChatterConfig) -> None:
+        """Бота перебили. Когда все замолчат (и никто не спросит нового) — бросает фразу и договаривает мысль."""
+        try:
+            quiet_since = None
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and session.unsaid:
+                await asyncio.sleep(0.2)
+                if session.replying or session.collector.speaking(time.monotonic(), window=0.5):
+                    quiet_since = None
+                    continue
+                quiet_since = quiet_since or time.monotonic()
+                if time.monotonic() - quiet_since >= 1.2:
+                    break
+            text, session.unsaid = session.unsaid, ""
+            if not text or session.replying or not session.vc.is_connected():
+                return
+            session.replying = True
+            try:
+                lead = random.choice(RESUME_PHRASES)
+                queue: asyncio.Queue = asyncio.Queue()
+                for part in [lead, *re.split(r"(?<=[.!?…])\s+", text)[:4]]:
+                    if part.strip():
+                        queue.put_nowait((part, asyncio.create_task(speak(part, cfg))))
+                queue.put_nowait(None)
+                log.info("Слушание: договариваю после того, как перебили: %s", text[:120])
+                if await self._play_queue(session.vc, queue, cfg, {"first_audio": None}, session):
+                    session.dialog.append((guild.me.display_name, f"{lead} {text}"))
+                    session.last_spoke = time.monotonic()
+            finally:
+                session.replying = False
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            log.exception("Слушание: не удалось договорить")
 
     # ------------------------------------------------------------ автоматически и из Discord
 

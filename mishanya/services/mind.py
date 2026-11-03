@@ -30,15 +30,24 @@ def parse_json(text: str) -> dict | None:
     if start < 0 or end <= start:
         return None
     try:
-        data = json.loads(text[start:end + 1])
+        data = json.loads(text[start:end + 1], strict=False)  # strict=False: переносы строк внутри строк
     except ValueError:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    return {str(k).strip(): v for k, v in data.items()}  # модель иногда пишет ключ как "\nreply"
 
 
 def parse_actions(raw: str) -> dict:
     """Ответ «мозга»: {"reply": str, "offense": 0..3, "move": [{"who", "to"}]}. Не-JSON — это просто реплика."""
     data = parse_json(raw)
+    if data is None and '"reply"' in raw:  # битый JSON — достаём хотя бы реплику, сырой JSON людям не показываем
+        from .chatter import ReplyStream
+
+        rs = ReplyStream()
+        reply = rs.feed(raw[raw.find("{"):] if "{" in raw else raw)
+        return {"reply": reply.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "actions": [],
+                "attitude": 0, "ignore_minutes": None, "unignore": False}
     if data is None:
         return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "actions": [],
                 "attitude": 0, "ignore_minutes": None, "unignore": False}

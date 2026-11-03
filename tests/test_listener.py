@@ -178,23 +178,29 @@ async def test_wake_word_and_followup(monkeypatch):
     assert [r[3] for r in session.recent if r[1] == "Вася"] == [False, True, True, False]
 
 
-def test_ducking_mixer_mixes_voice_over_music():
-    from mishanya.bot.cogs.listener import FRAME, DuckingMixer
+def test_voice_mixes_into_music_without_swapping_source():
+    """Голос бота подмешивается прямо в музыкальный поток: источник у плеера не подменяется, громкость работает."""
+    import discord as _d
 
-    class Music:
+    from mishanya.bot.cogs.music import MixedSource, Overlay
+
+    class Music(_d.AudioSource):
         def read(self):
             return frame(8000)
 
-        def cleanup(self):
-            pass
+        def is_opus(self):
+            return False
 
-    mixer = DuckingMixer(Music(), duck=0.3)
-    assert mixer.read() == frame(8000)  # пока бот молчит — чистая музыка
-    mixer.add(frame(4000) * 2)
-    out = mixer.read()
-    assert len(out) == FRAME and out != frame(8000) and not mixer.drained.is_set()
-    mixer.read()
-    assert mixer.drained.is_set() and mixer.read() == frame(8000)
+    overlay = Overlay(duck=0.3)
+    src = MixedSource(Music(), 1.0, overlay)
+    assert src.read() == frame(8000) and overlay.drained.is_set()  # бот молчит — чистая музыка
+    overlay.add(frame(4000) * 2)
+    out = src.read()
+    assert len(out) == Overlay.FRAME and out != frame(8000) and not overlay.drained.is_set()
+    src.read()
+    assert overlay.drained.is_set() and src.read() == frame(8000)
+    src.volume = 0.5  # /volume продолжает работать
+    assert src.read() != frame(8000)
 
 
 def test_address_kinds():
@@ -263,6 +269,7 @@ async def test_waits_for_pause_and_stops_when_interrupted(monkeypatch):
     vc = SimpleNamespace(is_connected=lambda: True, is_playing=lambda: False, play=play, stop=lambda: stopped.append(1))
     monkeypatch.setattr(L.discord, "FFmpegPCMAudio", lambda *a, **kw: object())
     cog = L.Listener.__new__(L.Listener)
+    cog.bot = SimpleNamespace(get_cog=lambda n: None)
     cfg = ChatterConfig()
 
     async def job():
@@ -272,17 +279,19 @@ async def test_waits_for_pause_and_stops_when_interrupted(monkeypatch):
     session = L.Session(vc=vc, channel_id=1, started=0, collector=L.UtteranceCollector())
     session.pending = (None, "wake", 0.0)
     q: L.asyncio.Queue = L.asyncio.Queue()
-    q.put_nowait(L.asyncio.ensure_future(job()))
+    q.put_nowait(("Ответ.", L.asyncio.ensure_future(job())))
     q.put_nowait(None)
     assert await cog._play_queue(vc, q, cfg, {"first_audio": None}, session) is False and played == []
 
     # 2) бота перебили — vc.stop()
     session = L.Session(vc=vc, channel_id=1, started=0, collector=L.UtteranceCollector())
     q = L.asyncio.Queue()
-    q.put_nowait(L.asyncio.ensure_future(job()))
+    q.put_nowait(("Первая мысль.", L.asyncio.ensure_future(job())))
+    q.put_nowait(("Вторая мысль.", L.asyncio.ensure_future(job())))
     q.put_nowait(None)
     task = L.asyncio.create_task(cog._play_queue(vc, q, cfg, {"first_audio": None}, session))
     await L.asyncio.sleep(0.05)
     for i in range(20):  # 0,4 с громкой речи
         session.collector.feed(5, frame(8000), L.time.monotonic())
     assert await L.asyncio.wait_for(task, 2) is True and stopped == [1] and len(played) == 1
+    assert session.unsaid == "Первая мысль. Вторая мысль."  # запомнил, что не договорил

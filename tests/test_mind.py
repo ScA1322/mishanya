@@ -766,7 +766,13 @@ async def test_telegram_only_for_trusted_and_only_in_dm(app, monkeypatch):
     assert note == "📨 Отправил в Telegram **Петя**: «опоздаю»"
 
 
-async def test_telegram_panel_api(authed, app):
+async def test_telegram_panel_api(authed, app, monkeypatch):
+    from mishanya.services.telegram import TelegramError
+
+    async def offline():
+        raise TelegramError("Telegram не подключён: войдите в аккаунт")
+
+    monkeypatch.setattr(app.telegram, "client_ready", offline)  # без похода в сеть
     st = (await authed.get("/api/telegram/status")).json()
     assert st["configured"] is False and st["authorized"] is False
     assert (await authed.put("/api/telegram/keys", json={"api_id": "12", "api_hash": "x"})).status_code == 422
