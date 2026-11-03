@@ -68,7 +68,7 @@ def _cog(app, monkeypatch, llm_answers: list[str]):
     from mishanya.bot.cogs import mind as M
 
     cog = M.Mind.__new__(M.Mind)
-    cog.app, cog.heard, cog.unlearned, cog.cooldowns, cog.quotas = app, {}, {}, {}, {}
+    cog.app, cog.heard, cog.unlearned, cog.cooldowns, cog.quotas, cog.joins = app, {}, {}, {}, {}, {}
     cog.started = 0
     calls = []
 
@@ -153,7 +153,11 @@ async def test_dm_stranger_cold_and_snoop_report(app, monkeypatch):
     async def send(text, **kw):  # noqa: ANN003
         out.append(text)
 
-    channel = SimpleNamespace(typing=Typing, send=send)
+    async def no_messages(limit):  # noqa: ARG001
+        return
+        yield
+
+    channel = SimpleNamespace(typing=Typing, send=send, history=no_messages)
     stranger = SimpleNamespace(id=5, name="spy_42", display_name="Шпион")
     await cog.handle_dm(SimpleNamespace(author=stranger, channel=channel, content="привет", attachments=[]))
     assert out == ["чё надо"] and "НИ ОДНОГО общего сервера" in calls[0]["context"] and sent == []
@@ -338,3 +342,102 @@ async def test_kick_ban_limits(app, monkeypatch):
     assert len(kicked) == 2 and "лимит" in notes[0] and "достал" in kicked[0]
     cfg.control_kick_ban = False
     assert await cog.do_actions(victim, [{"type": "ban", "who": "Вася"}], cfg, None) == []
+
+
+async def test_stranger_join_request_flow(app, monkeypatch):
+    """Чужак долго пишет и просится на сервер: бот передаёт доверенным, «Пустить» — шлёт приглашение."""
+    from mishanya.bot.cogs import mind as M
+
+    app.settings.deepseek_api_key = "sk-test"
+    boss = FakeMember(id=999999999999999999, bot=False, display_name="Босс")
+    boss_dm = []
+
+    async def boss_send(**kw):  # noqa: ANN003
+        boss_dm.append(kw)
+        return SimpleNamespace(channel=SimpleNamespace(id=1), id=len(boss_dm))
+
+    boss.send = boss_send
+    invites = []
+
+    async def create_invite(**kw):  # noqa: ANN003
+        invites.append(kw)
+        return SimpleNamespace(url="https://discord.gg/abc")
+
+    me = SimpleNamespace(display_name="Император")
+    text_channel = SimpleNamespace(permissions_for=lambda m: SimpleNamespace(create_instant_invite=True),
+                                   create_invite=create_invite)
+    guild = SimpleNamespace(id=GID, name="Лечебница", me=me, system_channel=text_channel, text_channels=[],
+                            get_member=lambda uid: boss if uid == boss.id else None)
+    cfg = ChatterConfig(enabled=True, confidants=[str(boss.id)], join_min_messages=3)
+    answers = ['{"reply": "сначала пообщайся, чужак", "wants_join": true, "forward_join": true}',
+               '{"reply": "ладно, спрошу своих", "wants_join": true, "forward_join": true, "join_why": "упорный"}']
+    cog, calls, _ = _cog(app, monkeypatch, answers)
+    stranger_dm = []
+
+    async def stranger_send(text, **kw):  # noqa: ANN001, ANN003
+        stranger_dm.append(text)
+
+    stranger = SimpleNamespace(id=5, name="spy_42", display_name="Шпион", send=stranger_send,
+                               display_avatar=SimpleNamespace(url="https://cdn/x.png"))
+    cog.bot = SimpleNamespace(guilds=[guild], user=SimpleNamespace(id=1), get_guild=lambda gid: guild,
+                              get_user=lambda uid: stranger, get_channel=lambda cid: None)
+
+    async def fake_cfg(gid):  # noqa: ANN001
+        return cfg
+
+    monkeypatch.setattr(cog, "cfg", fake_cfg)
+
+    async def no_history(*a):  # noqa: ANN002
+        return []
+
+    monkeypatch.setattr(M, "read_history", no_history)
+    written = {"n": 1}
+
+    def history(limit):  # noqa: ARG001
+        async def gen():
+            for _ in range(written["n"]):
+                yield SimpleNamespace(author=SimpleNamespace(id=5))
+        return gen()
+
+    class Typing:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):  # noqa: ANN002
+            return False
+
+    async def send(text, **kw):  # noqa: ANN001, ANN003
+        pass
+
+    channel = SimpleNamespace(typing=Typing, send=send, history=history)
+    msg = lambda t: SimpleNamespace(author=stranger, channel=channel, content=t, attachments=[])  # noqa: E731
+    await cog.handle_dm(msg("пусти на сервер"))
+    assert boss_dm == [] and "всего 1" in calls[0]["task"]  # мало общался — рано
+    written["n"] = 5
+    cog.cooldowns.clear()
+    await cog.handle_dm(msg("ну пусти, я хороший"))
+    assert len(boss_dm) == 1 and "spy_42" in boss_dm[0]["embed"].description
+    assert cog.joins[(GID, 5)]["status"] == "pending"
+
+    responses = []
+
+    class Resp:
+        async def send_message(self, text, **kw):  # noqa: ANN001, ANN003
+            responses.append(text)
+
+        async def defer(self):
+            pass
+
+    async def followup_send(text, **kw):  # noqa: ANN001, ANN003
+        responses.append(text)
+
+    intruder = SimpleNamespace(user=SimpleNamespace(id=7, display_name="Левый"), response=Resp(), message=None)
+    await cog.decide_join(intruder, True, GID, 5)
+    assert responses == ["Решать могут только доверенные люди."] and invites == []
+    click = SimpleNamespace(user=SimpleNamespace(id=boss.id, display_name="Босс"), response=Resp(), message=None,
+                            followup=SimpleNamespace(send=followup_send))
+    await cog.decide_join(click, True, GID, 5)
+    assert invites and invites[0]["max_uses"] == 1 and "https://discord.gg/abc" in stranger_dm[-1]
+    assert cog.joins[(GID, 5)]["status"] == "accepted"
+    await cog.decide_join(click, False, GID, 5)
+    assert responses[-1] == "Уже решено другим доверенным."

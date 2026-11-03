@@ -14,6 +14,7 @@ export interface MindConfig {
   control_music: boolean; control_moderation: boolean; control_roles: boolean;
   control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean;
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
+  join_requests: boolean; join_min_messages: number; join_retry_hours: number;
   report_inactive_days: number; gossip_hours: number;
   voice_triggers: VoiceTrigger[]; trigger_cooldown_minutes: number;
   listen_wake_words: string[]; listen_interject_percent: number; listen_interject_seconds: number;
@@ -228,6 +229,14 @@ export function ConfidantsCard<C extends MindConfig>({ guildId, d, set }: { guil
       <ToggleRow title="Отвечать в личке всем остальным" hint="Участникам сервера — в своём стиле, но без внутренних дел; людям с других общих серверов — холодно; тем, у кого с ботом нет ни одного общего сервера, — с максимальной ненавистью. Если кто-то выведывает лишнее, доверенным уйдёт доклад с его юзернеймом"
         checked={d.dm_open} onChange={(v) => set("dm_open", v)} />
       {d.dm_open && <Field label="Ответов одному человеку в час"><NumberInput value={d.dm_max_per_hour} min={1} max={600} onChange={(v) => set("dm_max_per_hour", v)} /></Field>}
+      {d.dm_open && <ToggleRow title="Чужаки могут проситься на сервер" hint="Если человек без общих серверов долго переписывается с ботом и просится на сервер, бот сам решает, передать ли просьбу. Доверенным придёт запрос с кнопками «Пустить» и «Отказать»; при «Пустить» бот сам отправит ему одноразовое приглашение на сутки. Бот может отказать сам — но не навсегда"
+        checked={d.join_requests} onChange={(v) => set("join_requests", v)} />}
+      {d.dm_open && d.join_requests && (
+        <div className="grid grid-2">
+          <Field label="Сначала написать боту, сообщений" hint="Раньше бот просьбу даже не рассматривает"><NumberInput value={d.join_min_messages} min={1} max={200} onChange={(v) => set("join_min_messages", v)} /></Field>
+          <Field label="После отказа можно снова через, часов"><NumberInput value={d.join_retry_hours} min={0} max={720} onChange={(v) => set("join_retry_hours", v)} /></Field>
+        </div>
+      )}
       {!!mind.data?.inactive.length && (
         <>
           <h3 className="mt">Давно не заходили в войс</h3>
