@@ -62,9 +62,54 @@ class Heard:
     kind: str  # text | voice | event
 
 
-def image_urls(message: discord.Message) -> list[str]:
-    return [a.url for a in message.attachments
-            if (a.content_type or "").startswith("image/") and a.size <= IMAGE_MAX_BYTES][:4]
+IMAGE_SIDE = 1280  # картинки уменьшаем: дешевле и быстрее, мелкий текст на скриншоте ещё читается
+RECENT_IMAGE_SECONDS = 180
+
+
+def _to_data_url(data: bytes) -> str | None:
+    """Картинка → JPEG data URL. Отправляем саму картинку, а не ссылку Discord: ссылки часть сервисов не скачивает."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.thumbnail((IMAGE_SIDE, IMAGE_SIDE))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=85)
+    except Exception:  # noqa: BLE001 — не картинка или битый файл
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
+
+
+async def collect_images(message: discord.Message, look_back: bool = True) -> list[str]:
+    """Картинки из сообщения и из нескольких предыдущих (часто кидают скрин, а вопрос пишут следующим сообщением)."""
+    messages = [message]
+    if look_back:
+        try:
+            async for m in message.channel.history(limit=4, before=message):
+                if (message.created_at - m.created_at).total_seconds() > RECENT_IMAGE_SECONDS:
+                    break
+                messages.append(m)
+        except (discord.HTTPException, AttributeError):
+            pass
+    out: list[str] = []
+    for m in messages:
+        for a in m.attachments:
+            if len(out) >= 4:
+                return out
+            if not (a.content_type or "").startswith("image/") or a.size > IMAGE_MAX_BYTES:
+                continue
+            try:
+                url = await asyncio.to_thread(_to_data_url, await a.read())
+            except discord.HTTPException:
+                url = None
+            if url:
+                out.append(url)
+    return out
 
 
 def message_line(m: discord.Message) -> str:
@@ -136,6 +181,28 @@ class Mind(commands.Cog):
                    context: str = "", temperature: float | None = None, max_tokens: int | None = None) -> str:
         s = self.app.settings
         vision = bool(images) and cfg.vision_enabled and bool(s.vision_model)
+        if images and not vision:
+            if self._cooldown(("no-vision",), 3600):
+                log.warning("Картинки: к сообщению приложена картинка, но модель для картинок не задана "
+                            "(панель → «Болтовня» → «Модели ИИ» → «Модель для картинок»)")
+            task += ("\n(К сообщению приложена картинка, но ты её не видишь — глаза не настроены. Не выдумывай, что "
+                     "на ней.)")
+        if vision:
+            try:
+                text = await generate(
+                    api_key=s.vision_key, base_url=s.vision_url, model=s.vision_model,
+                    system_prompt=cfg.system_prompt, history=history, channel=channel, bot_name=bot_name,
+                    mentioned=True, temperature=cfg.temperature if temperature is None else temperature,
+                    max_tokens=max_tokens or cfg.max_tokens, task=task, memory=memory, images=images, raw=raw,
+                    context=context)
+                self.app.chatter_error = None
+                return text
+            except ChatterError as exc:
+                # Модель не приняла картинку — отвечаем без неё, но причину пишем в журнал и в панель.
+                self.app.chatter_error = f"Картинки: модель {s.vision_model} не справилась — {exc}"
+                log.warning("Картинки: модель %s не справилась: %s", s.vision_model, exc)
+                task += "\n(Картинку ты не смог разглядеть — не выдумывай, что на ней.)"
+                vision = False
         try:
             text = await generate(
                 api_key=s.vision_key if vision else s.deepseek_api_key,
@@ -194,6 +261,19 @@ class Mind(commands.Cog):
             lines.append("Роли сервера: " + ", ".join(roles))
         return "\n".join(lines)
 
+    def note_contact(self, guild_id: int, user_id: int) -> int:
+        """Отмечает обращение к боту; возвращает, сколько их было за последнюю минуту (для «спамит»)."""
+        q = self.quotas.setdefault(("contact", guild_id, user_id), deque())
+        now = time.monotonic()
+        q.append(now)
+        while q and now - q[0] > 60:
+            q.popleft()
+        return len(q)
+
+    async def ignoring(self, guild_id: int, user_id: int) -> bool:
+        rel = await self.app.mind.relation(guild_id, user_id)
+        return bool(rel and rel.ignore_until and rel.ignore_until > utcnow())
+
     async def brain(self, guild: discord.Guild, author: discord.Member | None, cfg: ChatterConfig, *,
                     history: str, channel_name: str, task: str, images: list[str] | None = None,
                     voice: bool = False, channel: discord.abc.Messageable | None = None) -> tuple[str, list[str]]:
@@ -201,12 +281,45 @@ class Mind(commands.Cog):
         me = guild.me.display_name
         ids = [author.id] if author else []
         memory = await self.app.mind.recall(guild.id, ids) if cfg.memory_enabled else None
+        context = self._server_context(guild, author)
+        ignored = False
+        if author is not None:
+            rel = await self.app.mind.relation(guild.id, author.id)
+            attitude = rel.attitude if rel else 0
+            context += f"\nТвоё отношение к {author.display_name}: {attitude:+d} (от -10 ненавидишь до +10 любимчик)."
+            if rel and rel.ignore_until and rel.ignore_until > utcnow():
+                ignored = True
+                left = max(1, int((rel.ignore_until - utcnow()).total_seconds() // 60))
+                context += (f"\nТы сейчас ИГНОРИШЬ {author.display_name} (ещё {fmt_minutes(left)}"
+                            + (f", за: {rel.ignore_reason}" if rel.ignore_reason else "") + "). Пусть добивается твоего "
+                            "внимания. Почти всегда оставляй reply пустым; можешь изредка бросить короткое «отъебись». "
+                            "Если он реально заслужил прощение — unignore: true и ответь.")
+            spam = self.note_contact(guild.id, author.id)
+            if spam >= 5:
+                context += f"\n{author.display_name} спамит тебе: {spam} обращений за минуту."
         raw = await self._llm(cfg, history=history, channel=channel_name, bot_name=me, raw=True, memory=memory,
-                              images=images, context=self._server_context(guild, author),
+                              images=images, context=context,
                               task=f"{task}\n\n{ACTIONS_FORMAT}", max_tokens=max(cfg.max_tokens, 200))
         result = parse_actions(raw)
         notes: list[str] = []
         reply = clean_reply(result["reply"], me) if result["reply"] else ""
+        if author is not None:
+            ignore = result["ignore_minutes"] if cfg.character_ignore and not ignored else None
+            if result["attitude"] or ignore or (ignored and result["unignore"]):
+                await self.app.guilds.ensure(guild.id, guild.name)
+                await self.app.mind.update_relation(guild.id, author.id, delta=result["attitude"],
+                                                    ignore_minutes=ignore, unignore=ignored and result["unignore"],
+                                                    ignore_reason=history.splitlines()[-1][:200] if history else "")
+            if ignore:
+                log.info("Характер: игнорю %s %d мин", author, ignore)
+                await self.notify(guild, cfg, f"🙄 Начал игнорить **{author.display_name}** («{guild.name}») на "
+                                              f"{fmt_minutes(ignore)}.")
+            elif ignored and result["unignore"]:
+                log.info("Характер: перестал игнорить %s", author)
+                await self.notify(guild, cfg, f"😌 Перестал игнорить **{author.display_name}** («{guild.name}») — "
+                                              "добился внимания.")
+            elif ignored:
+                return reply, []  # игнорит: максимум короткое «отъебись», без действий по его просьбам
         if author is not None and result["offense"]:
             said = history.splitlines()[-1] if history else ""
             note = await self.punish(author, cfg, result["offense"], said, result["offense_reason"],
@@ -389,6 +502,10 @@ class Mind(commands.Cog):
                     note = await self._music(requester, a, cfg, channel)
                     if note:
                         notes.append(note)
+                elif kind in ("kick", "ban", "unban"):
+                    note = await self._kick_ban(requester, kind, a, cfg)
+                    if note:
+                        notes.append(note)
                 elif kind in ("disconnect", "voice_mute", "timeout", "nick", "role"):
                     note = await self._member_action(requester, kind, a, cfg)
                     if note:
@@ -489,6 +606,39 @@ class Mind(commands.Cog):
             await who.add_roles(role, reason=reason)
             return f"➕ Выдал **{who.display_name}** роль «{role.name}»."
         return None
+
+    async def _kick_ban(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig) -> str | None:
+        if not cfg.control_kick_ban:
+            return None
+        guild = requester.guild
+        why = str(a.get("reason") or "").strip()[:200] or "решение Императора"
+        reason = f"Mishanya сам решил: {why} (попросил {requester})"[:500]
+        if kind == "unban":
+            name = str(a.get("who") or "")
+            banned = [e.user async for e in guild.bans(limit=500)]
+            user = best_match(name, banned, lambda u: (u.name, u.global_name or ""))
+            if user is None:
+                return f"⚠️ Среди забаненных нет «{name}»."
+            await guild.unban(user, reason=reason)
+            await self.notify(guild, cfg, f"🕊️ Разбанил **@{user.name}** («{guild.name}») по просьбе {requester.display_name}.")
+            return f"🕊️ Разбанил **{user.name}**."
+        who = self._find_member(guild, requester, str(a.get("who") or ""))
+        if who is None:
+            return f"⚠️ Не понял, кто такой «{a.get('who')}»."
+        protected = self._protected(who)
+        if protected:
+            return f"⚠️ Не могу: {protected}."
+        if not self._take_quota(("kickban", guild.id), cfg.kick_ban_per_hour):
+            return "⚠️ Хватит на сегодня крови: лимит киков и банов в час исчерпан."
+        log.warning("Действие бота: %s %s (%s) — %s, попросил %s", kind, who, who.id, why, requester)
+        if kind == "kick":
+            await who.kick(reason=reason)
+            text = f"👢 Выгнал **{who.display_name}** с сервера. За: {why}."
+        else:
+            await who.ban(reason=reason, delete_message_seconds=0)
+            text = f"🔨 Забанил **{who.display_name}**. За: {why}."
+        await self.notify(guild, cfg, f"{text} («{guild.name}», @{who.name}, попросил {requester.display_name})")
+        return text
 
     async def _purge(self, requester: discord.Member, a: dict, cfg: ChatterConfig,
                      channel: discord.abc.Messageable | None) -> str | None:
@@ -792,7 +942,7 @@ class Mind(commands.Cog):
         try:
             async with message.channel.typing():
                 raw = await self._llm(cfg, history=format_history(history, me), channel="личка", bot_name=me,
-                                      context=context, task=task, raw=True, images=image_urls(message),
+                                      context=context, task=task, raw=True, images=await collect_images(message, look_back=False),
                                       max_tokens=max(cfg.max_tokens, 250))
         except ChatterError as exc:
             log.warning("Личка: %s", exc)
@@ -847,7 +997,7 @@ class Mind(commands.Cog):
         try:
             async with message.channel.typing():
                 text = await self._llm(cfg, history=format_history(history, me), channel="личка", bot_name=me,
-                                       context=context, images=image_urls(message),
+                                       context=context, images=await collect_images(message, look_back=False),
                                        memory=await self.app.mind.recall(guild.id, [member.id]) if cfg.memory_enabled else None,
                                        task="Ответь на последнее сообщение в личке, в своём стиле.",
                                        max_tokens=max(cfg.max_tokens, 300))

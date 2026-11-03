@@ -460,6 +460,9 @@ class ChatterConfig(Strict):
     control_music: bool = True
     control_moderation: bool = True  # мут, ник, удаление сообщений
     control_roles: bool = True  # выдавать и забирать роли (кроме ролей с админскими правами)
+    control_kick_ban: bool = True  # кикать и банить по своему решению
+    kick_ban_per_hour: int = Field(3, ge=1, le=30)  # не больше на сервер в час — защита от безумия модели
+    character_ignore: bool = True  # может игнорить людей, которые его достали
     # Доверенные: личная переписка с ботом и его доклады в ЛС
     confidants: list[Snowflake] = Field(default_factory=list, max_length=10)
     confidant_dm_chat: bool = True

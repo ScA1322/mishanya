@@ -19,7 +19,10 @@ def test_parse_actions():
           '"mute_minutes": 25, "move": [{"who": "я", "to": "Курилка"}]}\n```'
     a = parse_actions(raw)
     assert a == {"reply": "ну ты и дерзкий", "offense": 2, "offense_reason": "назвал тупым", "mute_minutes": 25,
-                 "actions": [{"type": "move", "who": "я", "to": "Курилка"}]}
+                 "actions": [{"type": "move", "who": "я", "to": "Курилка"}],
+                 "attitude": 0, "ignore_minutes": None, "unignore": False}
+    a = parse_actions('{"reply": "отъебись", "attitude": -9, "ignore_minutes": 30}')
+    assert (a["attitude"], a["ignore_minutes"], a["unignore"]) == (-3, 30, False)
     a = parse_actions('{"reply": "вырубаю", "actions": [{"type": "Music", "do": "stop"}, "мусор", {"do": "x"}]}')
     assert a["actions"] == [{"type": "music", "do": "stop"}]
     assert parse_actions("просто текст")["reply"] == "просто текст"
@@ -262,3 +265,76 @@ async def test_bot_controls_music_and_people(app, monkeypatch):
     assert timeouts and timeouts[0].total_seconds() == 1800 and "30 мин" in notes[0]
     cfg.control_music = False
     assert await cog.do_actions(vasya, [{"type": "music", "do": "skip"}], cfg, None) == []
+
+
+def test_image_to_data_url():
+    import base64
+    import io
+
+    from PIL import Image
+
+    from mishanya.bot.cogs.mind import _to_data_url
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (3000, 1500), (255, 0, 0, 255)).save(buf, "PNG")
+    url = _to_data_url(buf.getvalue())
+    assert url.startswith("data:image/jpeg;base64,")
+    img = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+    assert img.size == (1280, 640)  # уменьшено, пропорции сохранены
+    assert _to_data_url(b"not an image") is None
+
+
+async def test_ignore_and_relation(app, monkeypatch):
+    """Бот может начать игнорить; пока игнорит — по просьбам ничего не делает; простить может сам."""
+    from mishanya.bot.cogs import mind as M
+
+    await app.guilds.ensure(GID, "g")
+    cog, calls, sent = _cog(app, monkeypatch, [
+        '{"reply": "отъебись", "attitude": -2, "ignore_minutes": 30}',
+        '{"reply": "", "actions": [{"type": "music", "do": "stop"}]}',
+        '{"reply": "ладно, говори", "unignore": true, "attitude": 1}',
+    ])
+    cog.bot = SimpleNamespace(get_cog=lambda n: None)
+    author = SimpleNamespace(id=5, display_name="Вася", voice=None)
+    guild = SimpleNamespace(id=GID, name="g", me=SimpleNamespace(display_name="Император"), voice_channels=[],
+                            roles=[])
+    cfg = ChatterConfig(enabled=True, memory_enabled=False)
+    did = []
+
+    async def fake_actions(*a):  # noqa: ANN002
+        did.append(a[1])
+        return ["сделал"]
+
+    monkeypatch.setattr(cog, "do_actions", fake_actions)
+    reply, _ = await cog.brain(guild, author, cfg, history="Вася: ты тупой", channel_name="общий", task="ответь")
+    assert reply == "отъебись" and await cog.ignoring(GID, 5)
+    reply, notes = await cog.brain(guild, author, cfg, history="Вася: выключи музыку", channel_name="общий", task="t")
+    assert "ИГНОРИШЬ" in calls[1]["context"] and reply == "" and notes == [] and did == []
+    reply, _ = await cog.brain(guild, author, cfg, history="Вася: прости, был неправ", channel_name="общий", task="t")
+    assert reply == "ладно, говори" and not await cog.ignoring(GID, 5)
+    assert (await app.mind.relation(GID, 5)).attitude == -1
+
+
+async def test_kick_ban_limits(app, monkeypatch):
+    cog, _, sent = _cog(app, monkeypatch, [])
+
+    class Role(SimpleNamespace):
+        def __ge__(self, other):  # noqa: ANN001
+            return self.position >= other.position
+
+    me = SimpleNamespace(id=1, top_role=Role(position=10), display_name="Император")
+    guild = SimpleNamespace(id=GID, name="g", owner_id=2, me=me, members=[], get_member=lambda uid: None)
+    kicked = []
+
+    async def kick(reason=None):  # noqa: ANN001
+        kicked.append(reason)
+
+    victim = FakeMember(id=5, name="vasya", display_name="Вася", global_name=None, bot=False, guild=guild,
+                        guild_permissions=SimpleNamespace(administrator=False), top_role=Role(position=1), kick=kick)
+    guild.members = [victim]
+    cfg = ChatterConfig(enabled=True, kick_ban_per_hour=2)
+    for _ in range(3):
+        notes = await cog.do_actions(victim, [{"type": "kick", "who": "Вася", "reason": "достал"}], cfg, None)
+    assert len(kicked) == 2 and "лимит" in notes[0] and "достал" in kicked[0]
+    cfg.control_kick_ban = False
+    assert await cog.do_actions(victim, [{"type": "ban", "who": "Вася"}], cfg, None) == []

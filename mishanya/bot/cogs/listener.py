@@ -288,6 +288,7 @@ class Listener(commands.Cog):
         s = self.app.settings
         me = guild.me.display_name
         text: str | None = None
+        ai_failed = not (cfg.use_ai and s.deepseek_api_key)
         if cfg.use_ai and s.deepseek_api_key:
             dialog = "\n".join(f"{n}: {t}" for n, t in session.dialog)
             people = ", ".join(m.display_name for m in vc.channel.members if not m.bot)
@@ -315,9 +316,10 @@ class Listener(commands.Cog):
             except ChatterError as exc:
                 log.warning("Слушание: %s", exc)
                 self.app.chatter_error = str(exc)
+                ai_failed = True
                 if interject or not cfg.fallback_to_phrases:
                     return False
-        if not text and not interject:
+        if not text and ai_failed and not interject:
             text = pick_phrase(cfg.phrases)
         if not text:
             return False

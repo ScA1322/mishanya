@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, func, select
 
 from ..db import Database
-from ..db.models import BotGrudge, BotMemory, VoiceSeen, utcnow
+from ..db.models import BotGrudge, BotMemory, BotRelation, VoiceSeen, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +39,8 @@ def parse_actions(raw: str) -> dict:
     """Ответ «мозга»: {"reply": str, "offense": 0..3, "move": [{"who", "to"}]}. Не-JSON — это просто реплика."""
     data = parse_json(raw)
     if data is None:
-        return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "actions": []}
+        return {"reply": raw.strip(), "offense": 0, "offense_reason": "", "mute_minutes": None, "actions": [],
+                "attitude": 0, "ignore_minutes": None, "unignore": False}
     try:
         offense = max(0, min(3, int(data.get("offense") or 0)))
     except (TypeError, ValueError):
@@ -48,6 +49,14 @@ def parse_actions(raw: str) -> dict:
         mute = max(1, min(40320, int(data.get("mute_minutes")))) if data.get("mute_minutes") else None
     except (TypeError, ValueError):
         mute = None
+    try:
+        attitude = max(-3, min(3, int(data.get("attitude") or 0)))
+    except (TypeError, ValueError):
+        attitude = 0
+    try:
+        ignore = max(1, min(10080, int(data.get("ignore_minutes")))) if data.get("ignore_minutes") else None
+    except (TypeError, ValueError):
+        ignore = None
     actions = data.get("actions") or []
     if isinstance(actions, dict):
         actions = [actions]
@@ -68,13 +77,19 @@ def parse_actions(raw: str) -> dict:
         clean.append(item)
     return {"reply": str(data.get("reply") or "").strip(), "offense": offense,
             "offense_reason": str(data.get("offense_reason") or "").strip()[:200], "mute_minutes": mute,
-            "actions": clean[:10]}
+            "actions": clean[:10], "attitude": attitude, "ignore_minutes": ignore,
+            "unignore": data.get("unignore") is True}
 
 
 ACTIONS_FORMAT = (
     "Ответь СТРОГО одним JSON-объектом без текста вокруг:\n"
     '{"reply": "твой ответ (пустая строка, если последнее сообщение явно не тебе и встревать незачем)", '
-    '"offense": 0, "offense_reason": "", "mute_minutes": 0, "actions": []}\n'
+    '"offense": 0, "offense_reason": "", "mute_minutes": 0, "actions": [], "attitude": 0, '
+    '"ignore_minutes": 0, "unignore": false}\n'
+    "У тебя свой характер: ты можешь любить, презирать и игнорить кого захочешь. attitude — как изменилось твоё "
+    "отношение к автору после этого сообщения (от -3 до +3, обычно 0). ignore_minutes — если он тебя достал, спамит "
+    "или просто бесит, начни его игнорить на сколько захочешь (можно бросить напоследок что-нибудь вроде «отъебись»); "
+    "пусть потом добивается твоего внимания. unignore — true, если ты его игнорил, а он заслужил прощение.\n"
     "offense — насколько последнее сообщение издевается над тобой или оскорбляет ТЕБЯ лично: 0 — нормально или "
     "обычный дружеский мат, 1 — подкол или стёб, 2 — настоящее оскорбление или унижение, 3 — жёсткая травля. "
     "Оскорбления других людей, мат в воздух и шутки не про тебя — это 0. offense_reason — если offense > 0, "
@@ -94,6 +109,9 @@ ACTIONS_FORMAT = (
     '{"type": "nick", "who": "…", "name": "новый ник"} — пустое имя сбрасывает ник\n'
     '{"type": "role", "who": "…", "role": "название роли", "give": true/false}\n'
     '{"type": "purge", "count": 1-50} — удалить последние сообщения в этом канале\n'
+    '{"type": "kick", "who": "…", "reason": "за что"} — выгнать с сервера\n'
+    '{"type": "ban", "who": "…", "reason": "за что"} — забанить (по-крупному, не за ерунду)\n'
+    '{"type": "unban", "who": "имя забаненного"}\n'
     "Каналы и людей бери из списков выше, не выдумывай. Если ничего не делаешь — пустой список."
 )
 
@@ -232,6 +250,33 @@ class MindService:
             if row is not None:
                 await s.delete(row)
                 await s.commit()
+            return row
+
+    # отношение и игнор
+    async def relation(self, guild_id: int, user_id: int) -> BotRelation | None:
+        async with self.db.session() as s:
+            return await s.get(BotRelation, (guild_id, user_id))
+
+    async def relations(self, guild_id: int) -> list[BotRelation]:
+        async with self.db.session() as s:
+            return list((await s.execute(select(BotRelation).where(BotRelation.guild_id == guild_id)
+                                         .order_by(BotRelation.attitude))).scalars())
+
+    async def update_relation(self, guild_id: int, user_id: int, *, delta: int = 0,
+                              ignore_minutes: int | None = None, ignore_reason: str = "",
+                              unignore: bool = False) -> BotRelation:
+        async with self.db.session() as s:
+            row = await s.get(BotRelation, (guild_id, user_id))
+            if row is None:
+                row = BotRelation(guild_id=guild_id, user_id=user_id, attitude=0, ignore_reason="")
+                s.add(row)
+            row.attitude = max(-10, min(10, (row.attitude or 0) + delta))
+            if unignore:
+                row.ignore_until, row.ignore_reason = None, ""
+            elif ignore_minutes:
+                row.ignore_until = utcnow() + timedelta(minutes=ignore_minutes)
+                row.ignore_reason = ignore_reason[:200]
+            await s.commit()
             return row
 
     # голосовая активность

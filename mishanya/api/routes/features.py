@@ -19,6 +19,7 @@ from ...services.music import self_test, voice_available
 from ...services.posts import PostLimit
 from ...services.tts import TtsError, synthesize
 from ...services.templates import SAMPLE_VALUES, member_values
+from ...db.models import utcnow
 from ..auth import require_auth
 from ..deps import discord_guild, get_app, guild_id_dep, iso, user_label
 from .guilds import validation_detail
@@ -618,7 +619,19 @@ async def mind_overview(request: Request, guild_id: int = Depends(guild_id_dep))
                      for r in await app.mind.inactive(guild_id, cfg.report_inactive_days or 7)
                      if dg is None or dg.get_member(r.user_id) is not None][:50],
         "vision_model": app.settings.vision_model,
+        "relations": [{"user": _member_info(dg, r.user_id), "attitude": r.attitude,
+                       "ignore_until": iso(r.ignore_until) if r.ignore_until and r.ignore_until > utcnow() else None,
+                       "ignore_reason": r.ignore_reason}
+                      for r in await app.mind.relations(guild_id) if r.attitude or r.ignore_until],
     }
+
+
+@router.post("/mind/unignore/{user_id}")
+async def mind_unignore(request: Request, user_id: int, guild_id: int = Depends(guild_id_dep)) -> dict:
+    app = get_app(request)
+    await app.guilds.ensure(guild_id)
+    await app.mind.update_relation(guild_id, user_id, unignore=True)
+    return {"ok": True}
 
 
 @router.delete("/mind/memories/{memory_id}")

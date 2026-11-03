@@ -12,6 +12,7 @@ export interface MindConfig {
   apology_channel_id: string | null; punish_exempt_roles: string[];
   move_enabled: boolean; move_others_requires_permission: boolean;
   control_music: boolean; control_moderation: boolean; control_roles: boolean;
+  control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean;
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
   report_inactive_days: number; gossip_hours: number;
   voice_triggers: VoiceTrigger[]; trigger_cooldown_minutes: number;
@@ -24,6 +25,7 @@ interface MindData {
   memories: { id: number; text: string; user: MemberRef | null; created_at: string }[];
   grudges: { user: MemberRef; roles: string[]; reason: string; created_at: string }[];
   inactive: { user: MemberRef; last_seen: string }[];
+  relations: { user: MemberRef; attitude: number; ignore_until: string | null; ignore_reason: string }[];
   vision_model: string;
 }
 export interface AiStatus { ai_configured: boolean; model: string; base_url: string; vision_model: string }
@@ -162,14 +164,16 @@ export function GrudgeCard<C extends MindConfig>({ guildId, d, set }: { guildId:
 
 export function MoveCard<C extends MindConfig>({ d, set }: { d: C; set: Setter<C> }) {
   return (
-    <Card title="Власть бота" subtitle="Бот сам решает, что делать на сервере: по просьбе в чате или голосом («император, выруби музыку») — или по своей воле. Может и отказать. Владельца, администраторов и тех, чья роль выше роли бота, он не трогает; роли с админскими правами не раздаёт; банить и кикать не умеет.">
+    <Card title="Власть бота" subtitle="Бот сам решает, что делать на сервере: по просьбе в чате или голосом («император, выруби музыку») — или по своей воле. Может и отказать. Владельца, администраторов и тех, чья роль выше роли бота, он не трогает; роли с админскими правами не раздаёт.">
       <ToggleRow title="Музыка" hint="Включить трек, пауза, пропуск, стоп, громкость, повтор, перемешать" checked={d.control_music} onChange={(v) => set("control_music", v)} />
       <ToggleRow title="Голосовые каналы" hint="Перекинуть в другой канал, выкинуть из войса, выключить микрофон. Нужно право «Перемещать участников» и «Отключать микрофон»" checked={d.move_enabled} onChange={(v) => set("move_enabled", v)} />
       {d.move_enabled && <ToggleRow title="Чужих перекидывать — только по просьбе тех, у кого есть право перемещать" hint="Выключено — бот сам решает, кого куда утащить"
         checked={d.move_others_requires_permission} onChange={(v) => set("move_others_requires_permission", v)} />}
       <ToggleRow title="Модерация" hint="Мут в чате и снятие мута, смена ника, удаление последних сообщений (до 50)" checked={d.control_moderation} onChange={(v) => set("control_moderation", v)} />
       <ToggleRow title="Роли" hint="Выдать или забрать роль ниже роли бота (кроме ролей с админскими правами)" checked={d.control_roles} onChange={(v) => set("control_roles", v)} />
-      <div className="small muted">Боту нужны права: «Управлять ролями», «Управлять никнеймами», «Отправлять участников подумать», «Управлять сообщениями», «Перемещать участников», «Отключать участникам микрофон».</div>
+      <ToggleRow title="Кик и бан" hint="Выгнать или забанить по своему решению. О каждом кике и бане доверенным уходит доклад с причиной" checked={d.control_kick_ban} onChange={(v) => set("control_kick_ban", v)} />
+      {d.control_kick_ban && <Field label="Киков и банов в час, не больше" hint="Защита на случай, если модель «сойдёт с ума»"><NumberInput value={d.kick_ban_per_hour} min={1} max={30} onChange={(v) => set("kick_ban_per_hour", v)} /></Field>}
+      <div className="small muted">Боту нужны права: «Управлять ролями», «Управлять никнеймами», «Отправлять участников подумать», «Управлять сообщениями», «Перемещать участников», «Отключать участникам микрофон», «Выгонять участников», «Банить участников».</div>
     </Card>
   );
 }
@@ -256,6 +260,34 @@ export function TriggersCard<C extends MindConfig>({ d, set }: { d: C; set: Sett
         <span className="spacer" />
         <Field label="Не чаще раза в, минут"><NumberInput value={d.trigger_cooldown_minutes} min={0} max={1440} onChange={(v) => set("trigger_cooldown_minutes", v)} /></Field>
       </div>
+    </Card>
+  );
+}
+
+export function CharacterCard<C extends MindConfig>({ guildId, d, set }: { guildId: string; d: C; set: Setter<C> }) {
+  const toast = useToast();
+  const mind = useMind(guildId);
+  const unignore = async (id: string) => {
+    try { await post(`/api/guilds/${guildId}/mind/unignore/${id}`); mind.reload(); }
+    catch (e) { toast("err", errorText(e)); }
+  };
+  const rows = mind.data?.relations ?? [];
+  return (
+    <Card title="Характер" subtitle="У бота своё отношение к каждому человеку: кого-то он любит, кого-то презирает. Если его достают или спамят, он может послать и начать игнорить — тогда его внимание придётся добиваться.">
+      <ToggleRow title="Может игнорить людей" checked={d.character_ignore} onChange={(v) => set("character_ignore", v)} />
+      <h3 className="mt">Отношение к людям</h3>
+      {rows.length ? (
+        <div className="stack" style={{ gap: 6 }}>
+          {rows.map((r) => (
+            <div key={r.user.id} className="row small" style={{ gap: 8 }}>
+              <b style={{ minWidth: 140 }}>{r.user.name}</b>
+              <span className={`badge ${r.attitude > 0 ? "badge-ok" : r.attitude < 0 ? "badge-err" : ""}`}>{r.attitude > 0 ? "+" : ""}{r.attitude}</span>
+              <span style={{ flex: 1 }}>{r.ignore_until ? `игнорит до ${fmtDate(r.ignore_until)}` : ""}</span>
+              {r.ignore_until && <button className="btn btn-sm" onClick={() => unignore(r.user.id)}>Перестать игнорить</button>}
+            </div>
+          ))}
+        </div>
+      ) : <div className="small muted">Пока ко всем относится ровно.</div>}
     </Card>
   );
 }

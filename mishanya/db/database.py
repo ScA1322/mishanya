@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, BotGrudge, BotMemory, ButtonMenu, Post, TempVoiceChannel, Ticket, VoiceSeen
+from .models import Base, BotGrudge, BotMemory, BotRelation, ButtonMenu, Post, TempVoiceChannel, Ticket, VoiceSeen
 
 log = logging.getLogger(__name__)
 
@@ -42,12 +42,17 @@ def _m5_mind(conn: Connection) -> None:
     # Поля новых настроек появляются сами (значения по умолчанию), менять таблицы конфигурации не нужно.
 
 
+def _m6_relations(conn: Connection) -> None:
+    Base.metadata.create_all(conn, tables=[BotRelation.__table__])
+
+
 MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _m1_initial),
     (2, _m2_tickets_menus),
     (3, _m3_temp_voice),
     (4, _m4_posts),
     (5, _m5_mind),
+    (6, _m6_relations),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

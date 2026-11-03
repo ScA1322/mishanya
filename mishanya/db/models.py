@@ -294,6 +294,18 @@ class BotGrudge(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class BotRelation(Base):
+    """Как бот относится к человеку (-10 ненавидит … +10 любимчик) и не игнорит ли его сейчас."""
+
+    __tablename__ = "bot_relations"
+    guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    attitude: Mapped[int] = mapped_column(Integer, default=0)
+    ignore_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ignore_reason: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class VoiceSeen(Base):
     """Когда участник последний раз был в голосовом канале (для докладов «давно не заходит»)."""
 

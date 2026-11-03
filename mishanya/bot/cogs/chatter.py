@@ -17,7 +17,7 @@ from ...services.chatter import ChatterError, format_history, generate, pick_phr
 from ...services.music import VOICE_MISSING, ffmpeg_executable, voice_available
 from ...services.tts import TtsError, ffmpeg_options, synthesize
 from ..client import MishanyaBot
-from .mind import image_urls, read_history
+from .mind import collect_images, read_history
 from ..utils import UserFacingError, ok_embed, require_guild, respond
 
 log = logging.getLogger(__name__)
@@ -79,6 +79,10 @@ class Chatter(commands.Cog):
             key = (message.guild.id, message.author.id)
             if now - self.mention_cd.get(key, 0) < cfg.reply_cooldown_seconds:
                 return
+            if mind is not None and await mind.ignoring(*key):  # type: ignore[attr-defined]
+                # Игнорит: «добиваться» можно, но бот обдумывает это не чаще раза в 20 секунд.
+                if now - self.mention_cd.get(key, 0) < 20:
+                    return
             if self.waiting.get(message.channel.id, 0) >= 2 or \
                     not self._take_hourly(("dialog", message.guild.id), cfg.dialog_max_per_hour, now):
                 return
@@ -159,7 +163,7 @@ class Chatter(commands.Cog):
                 async with channel.typing():
                     return await mind.brain(channel.guild, message.author, cfg,  # type: ignore[attr-defined]
                                             history=format_history(history, me), channel_name=channel.name,
-                                            task=task, images=image_urls(message), channel=channel)
+                                            task=task, images=await collect_images(message), channel=channel)
             except ChatterError as exc:
                 log.warning("Болтовня: %s", exc)
                 if not (explicit and cfg.fallback_to_phrases):
