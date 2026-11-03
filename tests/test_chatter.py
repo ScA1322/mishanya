@@ -189,3 +189,10 @@ def test_vision_test_image_is_readable():
 
     url, secret = vision_test_image()
     assert url.startswith("data:image/jpeg;base64,") and secret.startswith("КОТ ")
+
+
+def test_vision_error_explains_image_generators():
+    from mishanya.services.chatter import explain_vision_error
+
+    assert "РИСУЕТ" in explain_vision_error("DeepSeek ответил ошибкой 404: not found", "gpt-image-2")
+    assert "нет модели" in explain_vision_error("ответил ошибкой 404", "gpt-4o-mni")

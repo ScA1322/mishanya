@@ -119,6 +119,12 @@ def vision_test_image() -> tuple[str, str]:
 def explain_vision_error(error: str, model: str) -> str:
     """Человеческое объяснение, почему модель не смотрит картинки."""
     low = error.lower()
+    kind = model.lower()
+    if any(k in kind for k in ("image", "dall-e", "dalle", "flux", "midjourney", "stable-diffusion", "sdxl")):
+        return (f"«{model}» — модель, которая РИСУЕТ картинки, а не смотрит их: через чат она не работает. "
+                "Нужна обычная чат-модель со зрением: gpt-4o-mini, gpt-4o, gpt-4.1-mini или gemini-…-flash.")
+    if any(k in kind for k in ("tts", "whisper", "transcribe", "embedding", "moderation")):
+        return f"«{model}» — не чат-модель (озвучка, распознавание речи или эмбеддинги). Нужна чат-модель со зрением, например gpt-4o-mini."
     if "404" in low or "not found" in low or "does not exist" in low or "unknown model" in low:
         return f"У сервиса нет модели «{model}». Проверьте название в его списке моделей."
     if "image" in low or "vision" in low or "multimodal" in low or "content" in low and "400" in low:
