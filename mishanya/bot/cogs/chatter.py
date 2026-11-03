@@ -79,7 +79,8 @@ class Chatter(commands.Cog):
             return
 
         explicit = cfg.reply_on_mention and self._addressed(message, cfg)
-        in_dialog = cfg.reply_on_mention and self.dialog.get((message.channel.id, message.author.id), 0) > now
+        in_dialog = cfg.reply_on_mention and (self.dialog.get((message.channel.id, message.author.id), 0) > now or (
+            isinstance(message.channel, discord.TextChannel) and (message.channel.topic or "").startswith("Аудиенция у Императора")))
         if explicit or in_dialog:
             key = (message.guild.id, message.author.id)
             if now - self.mention_cd.get(key, 0) < cfg.reply_cooldown_seconds:

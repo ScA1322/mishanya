@@ -69,6 +69,7 @@ def _cog(app, monkeypatch, llm_answers: list[str]):
 
     cog = M.Mind.__new__(M.Mind)
     cog.app, cog.heard, cog.unlearned, cog.cooldowns, cog.quotas, cog.joins = app, {}, {}, {}, {}, {}
+    cog.bridges, cog.bridges_rev = {}, {}
     cog.started = 0
     calls = []
 
@@ -699,6 +700,26 @@ def test_pc_opens_store_apps(monkeypatch):
     monkeypatch.setattr(pc.subprocess, "Popen", lambda args, **kw: launched.append(args))
     items = {"Telegram": pc.APPS_PREFIX + "Telegram.TelegramDesktop"}
     assert pc.open_program("telegram", items) == "Telegram"
-    assert launched == [["explorer.exe", "shell:AppsFolder\Telegram.TelegramDesktop"]]
+    assert launched == [["explorer.exe", pc.APPS_PREFIX + "Telegram.TelegramDesktop"]]
     with pytest.raises(pc.PcError):
         pc.open_program("evil", {"evil": pc.APPS_PREFIX + "x & calc"})
+
+
+async def test_dm_bridge_audience(app, monkeypatch):
+    """«Аудиенция»: сообщения доверенного уходят чужаку и наоборот; к боту — через «Император»."""
+    cog, _, _ = _cog(app, monkeypatch, [])
+    sent: dict[int, list[str]] = {1: [], 2: []}
+
+    async def bridge_send(uid, text):  # noqa: ANN001
+        sent[uid].append(text)
+        return True
+
+    monkeypatch.setattr(cog, "_bridge_send", bridge_send)
+    cog.bridges, cog.bridges_rev = {2: 1}, {1: 2}  # 1 — доверенный, 2 — чужак
+    cog.bot = SimpleNamespace(guilds=[])
+    boss = SimpleNamespace(id=1, name="boss", display_name="Босс")
+    await cog.handle_dm(SimpleNamespace(author=boss, content="привет, ты кто?", attachments=[], channel=None))
+    assert sent[2] == ["👑 **Босс**: привет, ты кто?"]
+    stranger = SimpleNamespace(id=2, name="spy", display_name="Шпион")
+    await cog.handle_dm(SimpleNamespace(author=stranger, content="я с другого сервера", attachments=[], channel=None))
+    assert sent[1] == ["🗣️ **@spy**: я с другого сервера"]
