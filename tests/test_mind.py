@@ -69,7 +69,7 @@ def _cog(app, monkeypatch, llm_answers: list[str]):
 
     cog = M.Mind.__new__(M.Mind)
     cog.app, cog.heard, cog.unlearned, cog.cooldowns, cog.quotas, cog.joins = app, {}, {}, {}, {}, {}
-    cog.bridges, cog.bridges_rev = {}, {}
+    cog.dm_groups, cog.dm_group_of, cog._next_group = {}, {}, 1
     cog.started = 0
     calls = []
 
@@ -462,11 +462,15 @@ def test_pc_open_close(monkeypatch, tmp_path):
         pc.open_program("format c:", items)
 
     monkeypatch.setattr(pc, "running_programs", lambda: ["Discord.exe", "steam.exe", "steamwebhelper.exe"])
+    monkeypatch.setattr(pc, "_described_processes", lambda: {"AyuGram.exe": ["Telegram Desktop"]})
     monkeypatch.setattr(pc.subprocess, "run", lambda args, **kw: (killed.append(args[2]), SimpleNamespace(returncode=0))[1])
     assert pc.close_program("discord") == "Discord.exe" and killed == ["Discord.exe"]
     assert pc.close_program("steam") == "steam.exe"
     with pytest.raises(pc.PcError, match="Не нашёл"):
         pc.close_program("explorer")  # системные процессы даже не видны
+    # форк Telegram находится по описанию программы
+    monkeypatch.setattr(pc, "running_programs", lambda: ["Discord.exe", "AyuGram.exe"])
+    assert pc.close_program("Telegram") == "AyuGram.exe"
 
 
 async def test_pc_only_for_trusted(app, monkeypatch):
@@ -705,24 +709,29 @@ def test_pc_opens_store_apps(monkeypatch):
         pc.open_program("evil", {"evil": pc.APPS_PREFIX + "x & calc"})
 
 
-async def test_dm_bridge_audience(app, monkeypatch):
-    """«Аудиенция»: сообщения доверенного уходят чужаку и наоборот; к боту — через «Император»."""
+async def test_dm_group(app, monkeypatch):
+    """Группа в личке: бот рассылает сообщение каждого остальным; «выйти из группы» — выходит, двое — распускает."""
     cog, _, _ = _cog(app, monkeypatch, [])
-    sent: dict[int, list[str]] = {1: [], 2: []}
+    sent: dict[int, list[str]] = {1: [], 2: [], 3: []}
 
-    async def bridge_send(uid, text):  # noqa: ANN001
+    async def send_to(uid, text, view=None):  # noqa: ANN001
         sent[uid].append(text)
         return True
 
-    monkeypatch.setattr(cog, "_bridge_send", bridge_send)
-    cog.bridges, cog.bridges_rev = {2: 1}, {1: 2}  # 1 — доверенный, 2 — чужак
-    cog.bot = SimpleNamespace(guilds=[])
-    boss = SimpleNamespace(id=1, name="boss", display_name="Босс")
-    await cog.handle_dm(SimpleNamespace(author=boss, content="привет, ты кто?", attachments=[], channel=None))
-    assert sent[2] == ["👑 **Босс**: привет, ты кто?"]
-    stranger = SimpleNamespace(id=2, name="spy", display_name="Шпион")
-    await cog.handle_dm(SimpleNamespace(author=stranger, content="я с другого сервера", attachments=[], channel=None))
-    assert sent[1] == ["🗣️ **@spy**: я с другого сервера"]
+    monkeypatch.setattr(cog, "_send_to", send_to)
+    cog.bot = SimpleNamespace(guilds=[], get_guild=lambda gid: None)
+    people = [SimpleNamespace(id=i, display_name=n) for i, n in ((1, "Босс"), (2, "Шпион"), (3, "Вася"))]
+    gid = await cog.create_dm_group(SimpleNamespace(id=GID), people, people[0])
+    assert all("собрал группу" in sent[i][0] for i in (1, 2, 3))
+    msg = lambda uid, text: SimpleNamespace(author=SimpleNamespace(id=uid, display_name="x"), content=text,  # noqa: E731
+                                            attachments=[], channel=None)
+    await cog.handle_dm(msg(2, "всем привет"))
+    assert sent[1][-1] == "👥 **Шпион**: всем привет" and sent[3][-1] == "👥 **Шпион**: всем привет"
+    assert len(sent[2]) == 1  # себе не пересылается
+    await cog.handle_dm(msg(3, "выйти из группы"))
+    assert 3 not in cog.dm_group_of and "Вася вышел" in sent[1][-1]
+    await cog.handle_dm(msg(2, "выйти"))
+    assert gid not in cog.dm_groups and cog.dm_group_of == {}
 
 
 async def test_telegram_only_for_trusted_and_only_in_dm(app, monkeypatch):

@@ -108,34 +108,96 @@ def open_program(name: str, items: dict[str, str]) -> str:
     return str(found)
 
 
+def _toolhelp_processes() -> list[str]:
+    """Имена всех процессов через Windows API (быстро и без внешних команд, которые могут зависнуть)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return []
+    names: set[str] = set()
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    try:
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            names.add(entry.szExeFile)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return sorted(names)
+
+
+def _described_processes() -> dict[str, list[str]]:
+    """Имя .exe → описание и название продукта (по ним находятся форки: AyuGram, 64Gram — это тоже «Telegram»)."""
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Process | Select-Object Name,"
+                              "Description,Product | ConvertTo-Json -Compress"],
+                             capture_output=True, text=True, encoding="utf-8", timeout=40,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        rows = json.loads(out or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    info: dict[str, list[str]] = {}
+    for r in rows if isinstance(rows, list) else [rows]:
+        if isinstance(r, dict) and r.get("Name"):
+            info.setdefault(f"{r['Name']}.exe", []).extend(x for x in (r.get("Description"), r.get("Product")) if x)
+    return info
+
+
 def running_programs() -> list[str]:
     """Имена запущенных процессов (без системных)."""
     if sys.platform != "win32":
         return []
     try:
-        out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=15,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
-    names = {row[0] for row in csv.reader(io.StringIO(out)) if row}
-    return sorted(n for n in names if n.lower() not in PROTECTED)
+        names = _toolhelp_processes()
+    except Exception:  # noqa: BLE001 — на всякий случай старый способ
+        names = []
+    if not names:
+        try:
+            out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=40,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            names = sorted({row[0] for row in csv.reader(io.StringIO(out)) if row})
+        except (OSError, subprocess.SubprocessError):
+            names = []
+    return [n for n in names if n.lower() not in PROTECTED]
 
 
 def close_program(name: str) -> str:
     """Закрывает запущенную программу по названию (все её процессы). Системные процессы и бот защищены."""
     procs = running_programs()
+    if not procs:
+        raise PcError("Не удалось получить список запущенных программ.")
     q = normalize(name).replace(" ", "")
     found = best_match(name, procs, lambda n: (n.removesuffix(".exe"), n))
     if found is None:  # «закрой стим» → steam.exe, «дискорд» → Discord.exe и т. п.
         cand = [p for p in procs if q and (q in normalize(p).replace(" ", "") or normalize(p.removesuffix(".exe")) in q)]
         found = cand[0] if len(cand) == 1 else None
+    if found is None:  # ищем по описанию программы: «Telegram» → AyuGram.exe (Telegram Desktop)
+        info = _described_processes()
+        found = best_match(name, [p for p in procs if p in info], lambda n: (*info.get(n, []), n.removesuffix(".exe")))
     if found is None:
-        raise PcError(f"Не нашёл запущенную программу «{name}».")
+        log.info("Компьютер: «%s» не найден среди %d процессов", name, len(procs))
+        raise PcError(f"Не нашёл запущенную программу «{name}». Запущено похожего: "
+                      + (", ".join(p for p in procs if q[:3] and q[:3] in p.lower())[:300] or "ничего"))
     if str(found).lower() in PROTECTED:
         raise PcError(f"«{found}» — системный процесс, его не трогаю.")
-    r = subprocess.run(["taskkill", "/im", str(found), "/t", "/f"], capture_output=True, text=True, timeout=20,
+    r = subprocess.run(["taskkill", "/im", str(found), "/t", "/f"], capture_output=True, text=True, timeout=30,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if r.returncode != 0:
-        raise PcError(f"Windows не дал закрыть «{found}»: {(r.stderr or r.stdout).strip()[:200]}")
+        err = (r.stderr or r.stdout).strip()
+        if "denied" in err.lower() or "отказано" in err.lower() or r.returncode == 1:
+            raise PcError(f"«{found}» запущен от имени администратора — бот без прав администратора закрыть его не может.")
+        raise PcError(f"Windows не дал закрыть «{found}»: {err[:200]}")
     log.info("Компьютер: закрыл %s", found)
     return str(found)

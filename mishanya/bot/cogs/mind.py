@@ -179,26 +179,31 @@ def join_view(guild_id: int, user_id: int) -> discord.ui.View:
     return view
 
 
-class BridgeEnd(discord.ui.DynamicItem[discord.ui.Button], template=r"mishanya:bridge:end:(?P<u>\d+)"):
-    """«Завершить аудиенцию» — у доверенного под сообщением о начале разговора."""
+class GroupLeave(discord.ui.DynamicItem[discord.ui.Button], template=r"mishanya:group:leave:(?P<g>\d+)"):
+    """«Выйти из группы» — под приглашением в группу в личке."""
 
-    def __init__(self, user_id: int, button: discord.ui.Button | None = None):
-        super().__init__(button or discord.ui.Button(custom_id=f"mishanya:bridge:end:{user_id}", label="Завершить аудиенцию",
+    def __init__(self, group_id: int, button: discord.ui.Button | None = None):
+        super().__init__(button or discord.ui.Button(custom_id=f"mishanya:group:leave:{group_id}", label="Выйти из группы",
                                                      emoji="🚪", style=discord.ButtonStyle.secondary))
-        self.user_id = user_id
+        self.group_id = group_id
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item,  # noqa: ARG003
-                             match: re.Match[str], /) -> "BridgeEnd":
-        return cls(int(match["u"]), item)  # type: ignore[arg-type]
+                             match: re.Match[str], /) -> "GroupLeave":
+        return cls(int(match["g"]), item)  # type: ignore[arg-type]
 
     async def callback(self, interaction: discord.Interaction) -> None:
         cog = interaction.client.get_cog("Mind")  # type: ignore[union-attr]
-        if cog is not None:
-            await cog.end_bridge(interaction, self.user_id)
+        if cog is None:
+            return
+        if cog.dm_group_of.get(interaction.user.id) != self.group_id:
+            await interaction.response.send_message("Этой группы уже нет.", ephemeral=True)
+            return
+        await interaction.response.edit_message(view=None)
+        await cog.leave_dm_group(interaction.user.id)
 
 
-GROUP_TOPIC = "Аудиенция у Императора"  # по этой метке бот узнаёт свои группы
+LEAVE_RE = re.compile(r"^\s*(выйти|выхожу|покинуть|ливаю)( из)?( группы)?\s*$", re.I)
 
 
 class Mind(commands.Cog):
@@ -213,13 +218,15 @@ class Mind(commands.Cog):
         self.quotas: dict[tuple, deque[float]] = {}
         # просьбы чужаков пустить на сервер: (сервер, человек) → {"status": pending|declined|accepted, "at", "messages"}
         self.joins: dict[tuple[int, int], dict] = {}
-        # аудиенция с чужаком в личке: бот пересылает сообщения между ним и доверенным
-        self.bridges: dict[int, int] = {}  # чужак → доверенный
-        self.bridges_rev: dict[int, int] = {}  # доверенный → чужак
+        # Группы в личке: Discord не даёт ботам создавать групповые ЛС, поэтому группу ведёт сам бот — каждый пишет
+        # ему в личку, а он рассылает сообщение остальным участникам и сам участвует в разговоре.
+        self.dm_groups: dict[int, dict] = {}  # id → {"members": [id], "names": {id: имя}, "guild_id", "history"}
+        self.dm_group_of: dict[int, int] = {}  # человек → id его группы
+        self._next_group = 1
         self.started = time.monotonic()
 
     async def cog_load(self) -> None:
-        self.bot.add_dynamic_items(JoinDecision, BridgeEnd)
+        self.bot.add_dynamic_items(JoinDecision, GroupLeave)
         self.learn_tick.start()
         self.sentence_tick.start()
         self.report_tick.start()
@@ -922,49 +929,44 @@ class Mind(commands.Cog):
         return f"🎙️ Зашёл в «{channel.name}» и слушаю."
 
     async def _group(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig,
-                     channel: discord.abc.Messageable | None) -> str | None:
-        """Группа = приватный канал на сервере: видят только участники и бот (личные группы ботам Discord не даёт)."""
-        guild, me = requester.guild, requester.guild.me
+                     channel: discord.abc.Messageable | None) -> str | None:  # noqa: ARG002
+        """Группа в личке с ботом и названными людьми (участники сервера или те, кто писал боту)."""
+        guild = requester.guild
         if kind == "close_group":
-            if not (isinstance(channel, discord.TextChannel) and (channel.topic or "").startswith(GROUP_TOPIC)):
-                return "⚠️ Закрыть можно только группу-аудиенцию, находясь в ней."
-            await channel.delete(reason=f"Mishanya: закрыл группу по просьбе {requester}")
+            gid = self.dm_group_of.get(requester.id)
+            if gid is None:
+                return "⚠️ Ты не в группе."
+            await self.close_dm_group(gid, f"закрыл {requester.display_name}")
             return None
         allowed, _ = await self.may_summon(requester, cfg)
         if not allowed:
             return "🚫 Группу с Императором надо заслужить."
-        if not me.guild_permissions.manage_channels:
-            return "⚠️ Нет права «Управлять каналами» — создать группу не могу."
         if not self._take_quota(("group", guild.id), 5):
             return "⚠️ Хватит групп на этот час."
         names = a.get("who") or []
         if isinstance(names, str):
             names = [n.strip() for n in names.split(",")]
-        people = [requester]
-        for n in list(names)[:10]:
+        contacts = await self.app.mind.dm_contacts(50)
+        people: list[discord.abc.User] = [requester]
+        missing = []
+        for n in list(names)[:9]:
             m = self._find_member(guild, requester, str(n))
-            if m is not None and m not in people and not m.bot:
+            if m is None:  # может, это чужак, который писал боту в личку
+                c = best_match(str(n), contacts, lambda x: (x.name, x.display))
+                if c is not None:
+                    try:
+                        m = self.bot.get_user(c.user_id) or await self.bot.fetch_user(c.user_id)  # type: ignore[union-attr]
+                    except discord.HTTPException:
+                        m = None
+            if m is None:
+                missing.append(str(n))
+            elif m.id not in [p.id for p in people] and not m.bot:
                 people.append(m)
-        overwrites: dict = {guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                            me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True,
-                                                            read_message_history=True)}
-        for m in people:
-            overwrites[m] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
-                                                        attach_files=True)
-        category = discord.utils.get(guild.categories, name="Аудиенции Императора")
-        if category is None:
-            category = await guild.create_category("Аудиенции Императора", reason="Mishanya: группы",
-                                                   overwrites={guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                                                               me: discord.PermissionOverwrite(view_channel=True)})
-        title = str(a.get("name") or "").strip()[:80] or "аудиенция-" + "-".join(m.display_name for m in people[:3])
-        ch = await guild.create_text_channel(title[:90], category=category, overwrites=overwrites,
-                                             topic=f"{GROUP_TOPIC}: " + ", ".join(m.display_name for m in people),
-                                             reason=f"Mishanya: группа по просьбе {requester}")
-        await ch.send("🎭 " + " ".join(m.mention for m in people) + " — Император собрал вас. Говорите, я слушаю. "
-                      "Закрыть группу: «император, закрой группу».",
-                      allowed_mentions=discord.AllowedMentions(users=people))
-        log.info("Группа: %s создал %s (%d чел.)", requester, ch.name, len(people))
-        return f"🎭 Создал группу {ch.mention}: " + ", ".join(m.display_name for m in people) + "."
+        if len(people) < 2:
+            return f"⚠️ Не нашёл, с кем собрать группу: {', '.join(missing) or 'никого не назвали'}."
+        await self.create_dm_group(guild, people, requester)
+        return ("👥 Собрал группу в личке: " + ", ".join(p.display_name for p in people) + ". Проверьте ЛС."
+                + (f" Не нашёл: {', '.join(missing)}." if missing else ""))
 
     async def _timer(self, requester: discord.Member, a: dict, channel: discord.abc.Messageable | None) -> str | None:
         try:
@@ -1339,12 +1341,10 @@ class Mind(commands.Cog):
         """Личка. Доверенным — всё как есть; участникам сервера — в своём стиле, но без внутренних дел;
         посторонним — холодно. О чрезмерном интересе к серверу и людям докладывает доверенным."""
         author = message.author
-        stranger_id = self.bridges_rev.get(author.id)
-        if stranger_id is not None and not any(w in message.content.lower() for w in ("император", "импер")):
-            await self._bridge_forward(author, stranger_id, f"👑 **{author.display_name}**", message)
+        gid = self.dm_group_of.get(author.id)
+        if gid is not None and gid in self.dm_groups:
+            await self._group_message(message, gid)
             return
-        if author.id in self.bridges:
-            await self._bridge_forward(author, self.bridges[author.id], f"🗣️ **@{author.name}**", message)
         configs = [(g, await self.cfg(g.id)) for g in self.bot.guilds]
         for guild, cfg in configs:
             if cfg.enabled and cfg.confidant_dm_chat and (str(author.id) in cfg.confidants or self.family_of(author, cfg)) \
@@ -1439,8 +1439,6 @@ class Mind(commands.Cog):
         if reply:
             try:
                 await message.channel.send(reply, allowed_mentions=discord.AllowedMentions.none())
-                if author.id in self.bridges:  # на аудиенции доверенный видит и ответы бота
-                    await self._bridge_send(self.bridges[author.id], f"♾️ **{me}**: {reply}")
             except discord.HTTPException:
                 pass
         if stranger and cfg.join_requests and data and data.get("wants_join") is True:
@@ -1453,52 +1451,119 @@ class Mind(commands.Cog):
             else:
                 log.info("Просьба на сервер от %s (%s): бот пока отказал (%s)", author, author.id, why or "без причины")
 
-    async def _bridge_send(self, user_id: int, text: str) -> bool:
+    async def _send_to(self, user_id: int, text: str, view: discord.ui.View | None = None) -> bool:
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-            await user.send(text[:2000], allowed_mentions=discord.AllowedMentions.none())
+            kwargs = {"view": view} if view is not None else {}
+            await user.send(text[:2000], allowed_mentions=discord.AllowedMentions.none(), **kwargs)
             return True
         except discord.HTTPException:
             return False
 
-    async def _bridge_forward(self, author: discord.abc.User, to_id: int, prefix: str, message: discord.Message) -> None:
-        body = message.content or ""
-        if message.attachments:
-            body += "\n" + "\n".join(a.url for a in message.attachments[:4])
-        if not await self._bridge_send(to_id, f"{prefix}: {body.strip()}"):
-            try:
-                await message.channel.send("⚠️ Не дошло: собеседник закрыл личку.")
-            except discord.HTTPException:
-                pass
+    async def create_dm_group(self, guild: discord.Guild, people: list[discord.abc.User], by: discord.abc.User) -> int:
+        """Группа в личке: бот приглашает всех и дальше пересылает сообщения каждого остальным."""
+        for p in people:  # в двух группах сразу быть нельзя — переходит в новую
+            if p.id in self.dm_group_of:
+                await self.leave_dm_group(p.id, quiet=True)
+        gid = self._next_group
+        self._next_group += 1
+        self.dm_groups[gid] = {"members": [p.id for p in people], "names": {p.id: p.display_name for p in people},
+                               "guild_id": guild.id, "history": deque(maxlen=20)}
+        for p in people:
+            self.dm_group_of[p.id] = gid
+        names = ", ".join(p.display_name for p in people)
+        for p in people:
+            view = discord.ui.View(timeout=None)
+            view.add_item(GroupLeave(gid))
+            await self._send_to(p.id, f"👥 **Император собрал группу:** {names} и я.\nПишите мне сюда, как в обычный чат, — "
+                                      "я передам каждое сообщение остальным. Ко мне — через «Император». "
+                                      "Выйти — кнопка ниже или «выйти из группы».",
+                                view)
+        log.info("Группа в личке #%d: %s (собрал %s)", gid, names, by)
+        return gid
+
+    async def leave_dm_group(self, user_id: int, quiet: bool = False) -> None:
+        gid = self.dm_group_of.pop(user_id, None)
+        group = self.dm_groups.get(gid) if gid is not None else None
+        if group is None:
+            return
+        name = group["names"].get(user_id, "кто-то")
+        group["members"] = [m for m in group["members"] if m != user_id]
+        if not quiet:
+            await self._send_to(user_id, "🚪 Ты вышел из группы.")
+        if len(group["members"]) < 2:
+            for m in group["members"]:
+                self.dm_group_of.pop(m, None)
+                await self._send_to(m, f"🚪 {name} вышел — группа распущена. Император удалился.")
+            self.dm_groups.pop(gid, None)
+            return
+        for m in group["members"]:
+            await self._send_to(m, f"🚪 {name} вышел из группы.")
+
+    async def close_dm_group(self, gid: int, by: str) -> None:
+        group = self.dm_groups.pop(gid, None)
+        if group is None:
+            return
+        for m in group["members"]:
+            self.dm_group_of.pop(m, None)
+            await self._send_to(m, f"🚪 Группа закрыта ({by}).")
+
+    async def _group_message(self, message: discord.Message, gid: int) -> None:
+        """Сообщение в группе: разослать остальным; если обращаются к боту — ответить всем."""
+        author, group = message.author, self.dm_groups[gid]
+        text = message.content or ""
+        if LEAVE_RE.match(text):
+            await self.leave_dm_group(author.id)
+            return
+        body = text + ("\n" + "\n".join(a.url for a in message.attachments[:4]) if message.attachments else "")
+        name = group["names"].get(author.id, author.display_name)
+        group["history"].append((name, text or "[вложение]"))
+        for m in group["members"]:
+            if m != author.id and not await self._send_to(m, f"👥 **{name}**: {body.strip()}"):
+                await self._send_to(author.id, f"⚠️ {group['names'].get(m, m)} закрыл личку — до него не дошло.")
+        guild = self.bot.get_guild(group["guild_id"])
+        if guild is None:
+            return
+        cfg = await self.cfg(guild.id)
+        if not self._ready_ai(cfg) or self.address(text, author, cfg) is None:
+            return
+        member = guild.get_member(author.id)
+        me = guild.me.display_name
+        history = "\n".join(f"{n}: {t}" for n, t in group["history"])
+        context = (f"Это групповой чат в личке, который ты ведёшь сам: участники — {', '.join(group['names'].values())}. "
+                   "Твой ответ увидят все участники.")
+        try:
+            if member is not None:
+                reply, notes = await self.brain(guild, member, cfg, history=history, channel_name="группа в личке",
+                                                task="Последнее сообщение обращено к тебе — ответь.", extra_context=context)
+            else:
+                reply, notes = clean_reply(await self._llm(cfg, history=history, channel="группа в личке", bot_name=me,
+                                                           context=context, task="Последнее сообщение обращено к тебе — ответь."),
+                                           me), []
+        except ChatterError as exc:
+            log.warning("Группа в личке: %s", exc)
+            return
+        out = "\n".join(t for t in [reply, *notes] if t)
+        if out:
+            group["history"].append((me, reply))
+            for m in list(group["members"]):
+                await self._send_to(m, f"♾️ **{me}**: {out}")
 
     async def start_bridge(self, interaction: discord.Interaction, guild_id: int, user_id: int) -> None:
-        """Кнопка «Аудиенция»: бот соединяет доверенного с чужаком в личке и участвует в разговоре сам."""
+        """Кнопка «Аудиенция»: группа в личке — доверенный, чужак и сам бот."""
         cfg = await self.cfg(guild_id)
         if not self.is_trusted(interaction.user.id, cfg, interaction.user):
             await interaction.response.send_message("Аудиенцию назначают только свои.", ephemeral=True)
             return
-        old = self.bridges_rev.pop(interaction.user.id, None)
-        if old is not None:
-            self.bridges.pop(old, None)
-        self.bridges[user_id] = interaction.user.id
-        self.bridges_rev[interaction.user.id] = user_id
-        view = discord.ui.View(timeout=None)
-        view.add_item(BridgeEnd(user_id))
-        await interaction.response.send_message(
-            "🎭 Аудиенция началась. Всё, что ты пишешь мне в личку, я передаю ему, а его сообщения и мои ответы — тебе. "
-            "Чтобы сказать что-то только мне — начни с «Император» или «Импер».", view=view)
-        await self._bridge_send(user_id, f"🎭 Император дарует тебе аудиенцию. С тобой на связи **{interaction.user.display_name}** — "
-                                         "пиши, я передам. Веди себя прилично.")
-        log.info("Аудиенция в личке: %s ↔ %s", interaction.user, user_id)
-
-    async def end_bridge(self, interaction: discord.Interaction, user_id: int) -> None:
-        if self.bridges.get(user_id) != interaction.user.id:
-            await interaction.response.send_message("Эта аудиенция уже закончилась.", ephemeral=True)
+        guild = self.bot.get_guild(guild_id)
+        try:
+            stranger = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+        except discord.HTTPException:
+            await interaction.response.send_message("Не нашёл этого человека.", ephemeral=True)
             return
-        self.bridges.pop(user_id, None)
-        self.bridges_rev.pop(interaction.user.id, None)
-        await interaction.response.edit_message(content="🚪 Аудиенция завершена.", view=None)
-        await self._bridge_send(user_id, "🚪 Аудиенция окончена. Император удалился.")
+        await interaction.response.send_message("🎭 Аудиенция назначена — собираю группу.", ephemeral=False)
+        if guild is not None:
+            await self.create_dm_group(guild, [interaction.user, stranger], interaction.user)
 
     async def _count_dm(self, channel: discord.abc.Messageable, user_id: int) -> int:
         n = 0
