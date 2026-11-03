@@ -90,6 +90,11 @@ class UtteranceCollector:
                     done.append((uid, bytes(sp.pcm), sp.voiced * 0.02))
         return done
 
+    def speaking(self, now: float, window: float = 0.35, min_voiced: int = 0) -> bool:
+        """Говорит ли кто-то прямо сейчас (речь была не позже window секунд назад)."""
+        with self._lock:
+            return any(now - sp.last_voice < window and sp.voiced >= min_voiced for sp in self._users.values())
+
     def clear(self) -> None:
         with self._lock:
             self._users.clear()

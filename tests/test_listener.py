@@ -120,7 +120,7 @@ def test_dave_decrypt_wrapper():
 
 async def test_listen_api_without_bot(authed):
     st = (await authed.get(f"/api/guilds/{GID}/listen")).json()
-    assert st["listening"] is False and st["stt_model"] == "gpt-4o-transcribe"
+    assert st["listening"] is False and st["stt_model"] == "gpt-4o-mini-transcribe"
     assert (await authed.post(f"/api/guilds/{GID}/listen/start", json={"channel_id": GID})).status_code == 409
     cfg = (await authed.get(f"/api/guilds/{GID}/config/chatter")).json()
     assert cfg["listen_wake_words"] == ["император"] and cfg["listen_followup_seconds"] == 30
@@ -248,3 +248,41 @@ async def test_voice_starts_speaking_before_ai_finishes(monkeypatch):
     assert await cog._reply(guild, session, ChatterConfig(enabled=True), None) is True
     assert order.index("speak:Слушаю тебя, холоп.") < order.index("ai:done")
     assert order[-1] == "speak:Говори быстро"
+
+
+async def test_waits_for_pause_and_stops_when_interrupted(monkeypatch):
+    """Не перебивает: ждёт, пока договорят; если человек продолжил мысль — бросает старый ответ; перебили — молчит."""
+    from mishanya.bot.cogs import listener as L
+    from mishanya.schemas import ChatterConfig
+
+    played, stopped = [], []
+
+    def play(src, after):  # noqa: ANN001
+        played.append(src)  # «звучит», пока не остановят
+
+    vc = SimpleNamespace(is_connected=lambda: True, is_playing=lambda: False, play=play, stop=lambda: stopped.append(1))
+    monkeypatch.setattr(L.discord, "FFmpegPCMAudio", lambda *a, **kw: object())
+    cog = L.Listener.__new__(L.Listener)
+    cfg = ChatterConfig()
+
+    async def job():
+        return b"mp3", "google"
+
+    # 1) человек продолжил мысль, пока бот ждал паузу — старый ответ выброшен
+    session = L.Session(vc=vc, channel_id=1, started=0, collector=L.UtteranceCollector())
+    session.pending = (None, "wake", 0.0)
+    q: L.asyncio.Queue = L.asyncio.Queue()
+    q.put_nowait(L.asyncio.ensure_future(job()))
+    q.put_nowait(None)
+    assert await cog._play_queue(vc, q, cfg, {"first_audio": None}, session) is False and played == []
+
+    # 2) бота перебили — vc.stop()
+    session = L.Session(vc=vc, channel_id=1, started=0, collector=L.UtteranceCollector())
+    q = L.asyncio.Queue()
+    q.put_nowait(L.asyncio.ensure_future(job()))
+    q.put_nowait(None)
+    task = L.asyncio.create_task(cog._play_queue(vc, q, cfg, {"first_audio": None}, session))
+    await L.asyncio.sleep(0.05)
+    for i in range(20):  # 0,4 с громкой речи
+        session.collector.feed(5, frame(8000), L.time.monotonic())
+    assert await L.asyncio.wait_for(task, 2) is True and stopped == [1] and len(played) == 1

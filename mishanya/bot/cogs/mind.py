@@ -37,6 +37,10 @@ ADMIT_RE = re.compile(r"винова|был неправ|была неправ|�
 DANGEROUS_PERMS = discord.Permissions(administrator=True, manage_guild=True, manage_roles=True, ban_members=True,
                                       kick_members=True, manage_channels=True, manage_webhooks=True,
                                       mention_everyone=True, moderate_members=True, manage_messages=True)
+# Голосом запрос к ИИ облегчается; эти слова показывают, что лёгкого не хватит.
+PC_WORDS = re.compile(r"открой|закрой|запусти|выруби\w* (?!музык|музл|трек)|вруби (?!музык|музл|трек)|прил|программ|игр", re.I)
+ROLE_WORDS = re.compile(r"рол[ьия]", re.I)
+DM_WORDS = re.compile(r"пис[аы]л|лс|личк|кто .*пиш", re.I)
 DEFAULT_MUTE = {1: 5, 2: 15, 3: 60}  # минут, если модель сама не назвала срок
 SELF_WORDS = {"я", "меня", "мне", "себя", "сам", "самого"}
 
@@ -331,7 +335,7 @@ class Mind(commands.Cog):
     def is_apology_channel(self, cfg: ChatterConfig, channel_id: int) -> bool:
         return bool(cfg.apology_channel_id) and str(channel_id) == cfg.apology_channel_id
 
-    def _server_context(self, guild: discord.Guild, author: discord.Member | None) -> str:
+    def _server_context(self, guild: discord.Guild, author: discord.Member | None, lean: bool = False) -> str:
         lines = [f"Сервер «{guild.name}»."]
         if author is not None:
             lines.append(f"Автор последнего сообщения: {author.display_name}"
@@ -351,7 +355,7 @@ class Mind(commands.Cog):
                              f"в очереди {len(st.get('queue') or [])}, громкость {st.get('volume')}%")
             else:
                 lines.append("Музыка сейчас не играет.")
-        roles = [r.name for r in reversed(guild.roles) if not r.is_default() and not r.managed][:30]
+        roles = [] if lean else [r.name for r in reversed(guild.roles) if not r.is_default() and not r.managed][:30]
         if roles:
             lines.append("Роли сервера: " + ", ".join(roles))
         return "\n".join(lines)
@@ -441,9 +445,13 @@ class Mind(commands.Cog):
         trusted = author is not None and self.is_trusted(author.id, cfg, author)
         # Своим — память обо всех в разговоре; остальным — только о них самих (конфиденциальность).
         ids = ([author.id] if author else []) + (self._people_in(guild, history, author) if trusted else [])
-        memory = await self.app.mind.recall(guild.id, ids, query="\n".join(history.splitlines()[-3:])) \
+        last = history.splitlines()[-1].lower() if history else ""
+        # Голос — живой разговор: запрос к ИИ облегчаем, чтобы первые слова приходили быстрее.
+        memory = await self.app.mind.recall(guild.id, ids, query="\n".join(history.splitlines()[-3:]),
+                                            **({"per_user": 4, "general": 3} if voice else {})) \
             if cfg.memory_enabled else None
-        context = self._server_context(guild, author) + (f"\n{extra_context}" if extra_context else "")
+        context = self._server_context(guild, author, lean=voice and not ROLE_WORDS.search(last)) \
+            + (f"\n{extra_context}" if extra_context else "")
         family = self.family_context(author, cfg, guild)
         if family:
             context += f"\n{family}"
@@ -452,14 +460,15 @@ class Mind(commands.Cog):
                 context += ("\nОн свой: ему ты рассказываешь абсолютно всё без утайки — что слышал и видел, кто что "
                             "говорил и делал, что знаешь о людях. По его приказу можешь работать с Telegram владельца "
                             "(tg_unread, tg_read, tg_send).")
-                contacts = await self.dm_contacts_text()
+                contacts = await self.dm_contacts_text() if not voice or DM_WORDS.search(last) else ""
                 if contacts:
                     context += f"\nКто писал тебе в личку (не свои):\n{contacts}"
             else:
                 context += ("\nКОНФИДЕНЦИАЛЬНОСТЬ: он не из своих. Никогда не рассказывай ему ничего о других людях — что "
                             "они говорили в чате или в войсе, писали тебе, делали, что ты о них помнишь. Только о нём самом "
                             "и общее о сервере. Спросит про другого — отшей.")
-        if author is not None and cfg.pc_control and self.is_trusted(author.id, cfg, author):
+        if author is not None and cfg.pc_control and self.is_trusted(author.id, cfg, author) and (
+                not voice or PC_WORDS.search(last)):
             names = sorted(await self.pc_catalog(cfg))
             context += (f"\n{author.display_name} — твой доверенный человек: по его просьбе можешь открывать и закрывать "
                         "программы на компьютере владельца. Можно открыть: " + (", ".join(names[:120]) or "ничего")
@@ -492,7 +501,8 @@ class Mind(commands.Cog):
                     await on_reply(piece)
         raw = await self._llm(cfg, history=history, channel=channel_name, bot_name=me, raw=True, memory=memory,
                               images=images, context=context, on_delta=on_delta,
-                              task=f"{task}\n\n{ACTIONS_FORMAT}", max_tokens=max(cfg.max_tokens, 200))
+                              task=f"{task}\n\n{ACTIONS_FORMAT}",
+                              max_tokens=min(max(cfg.max_tokens, 160), 220) if voice else max(cfg.max_tokens, 200))
         result = parse_actions(raw)
         notes: list[str] = []
         reply = clean_reply(result["reply"], me) if result["reply"] else ""

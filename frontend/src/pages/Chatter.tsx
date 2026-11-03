@@ -14,7 +14,7 @@ interface ChatterConfig extends MindConfig {
   voice_enabled: boolean; voice_channels: string[]; voice_interval_minutes: number; voice_max_per_hour: number;
   voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google" | "elevenlabs" | "openai"; voice_eleven_id: string; voice_openai: string; voice_name: "dmitry" | "svetlana";
   voice_rate: number; voice_pitch: number;
-  listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean; listen_end_silence_ms: number;
+  listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean; listen_end_silence_ms: number; listen_barge_in: boolean;
 }
 interface Status { ai_configured: boolean; key_hint: string | null; model: string; base_url: string; vision_model: string; last_error: string | null }
 interface TestResult { text: string | null; source: "ai" | "phrase"; error: string | null; context: string | null }
@@ -332,6 +332,8 @@ function ListenCard({ guildId, d, set }: {
           <input className="input" defaultValue={d.trusted_aliases.join(", ")} onBlur={(e) => set("trusted_aliases", e.target.value.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean))} />
         </Field>
       </div>
+      <ToggleRow title="Замолкать, если перебили" hint="Как в живом разговоре: заговорили, пока бот говорит, — он обрывает фразу и слушает. А пока кто-то договаривает, бот не влезает"
+        checked={d.listen_barge_in} onChange={(v) => set("listen_barge_in", v)} />
       <ToggleRow title="Самому садиться слушать" hint="Если бот не в голосе, он сам зайдёт в канал, где больше всего людей (с учётом списка каналов и минимума людей выше)"
         checked={d.listen_auto} onChange={(v) => set("listen_auto", v)} />
 

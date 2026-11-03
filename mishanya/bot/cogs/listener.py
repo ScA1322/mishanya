@@ -33,6 +33,7 @@ OPUS_SILENCE = b"\xf8\xff\xfe"
 DAVE_MAGIC = b"\xfa\xfa"  # маркер в конце кадра, зашифрованного DAVE
 ALONE_LEAVE_SECONDS = 60
 MAX_PARALLEL_STT = 5
+FALLBACK_STT = "gpt-4o-transcribe"
 STALE_SECONDS = 12  # фраза ждала распознавания дольше — пропускаем: отвечать на старое бессмысленно
 FRAME = 3840  # 20 мс стерео 48 кГц, 16 бит
 SENTENCE_END = re.compile(r"[.!?…]+[»\")]*\s")  # конец предложения — можно отдавать в озвучку
@@ -305,7 +306,14 @@ class Listener(commands.Cog):
                     log.debug("Слушание: пропускаю фразу — ждала распознавания %.0f с", time.monotonic() - queued)
                     return
                 wav = await asyncio.to_thread(pcm_to_wav, pcm)
-                text = await transcribe(wav, api_key=s.stt_key, base_url=s.stt_url, model=s.stt_model)
+                try:
+                    text = await transcribe(wav, api_key=s.stt_key, base_url=s.stt_url, model=s.stt_model)
+                except SttError as exc:
+                    if s.stt_model_explicit or s.stt_model == FALLBACK_STT or "ключ" in str(exc):
+                        raise
+                    log.warning("Слушание: модель %s не подошла (%s) — перехожу на %s", s.stt_model, exc, FALLBACK_STT)
+                    s.stt_model = FALLBACK_STT
+                    text = await transcribe(wav, api_key=s.stt_key, base_url=s.stt_url, model=s.stt_model)
         except SttError as exc:
             session.error = str(exc)
             log.warning("Слушание: %s", exc)
@@ -319,7 +327,6 @@ class Listener(commands.Cog):
             "wake" if any(w in text.lower() for w in cfg.listen_wake_words) else None)
         addressed = how is not None or now < session.open_until
         session.recent.append((time.time(), name, text, addressed))
-        session.heard_at = queued or now
         session.dialog.append((name, text))
         session.heard_since += 1
         log.info("Слушание: %s (распознано за %.1f с): %s", name, time.monotonic() - t0, text[:150])
@@ -337,19 +344,21 @@ class Listener(commands.Cog):
             interject = False
         if addressed:
             log.info("Слушание: обращение от %s: %s", name, text[:200])
+        heard = queued or now
         if session.replying:
-            if addressed:  # говорит — ответит сразу после, не потеряем
-                session.pending = (member, how)
+            if addressed:  # говорит — ответит сразу после, не потеряем (и с учётом сказанного)
+                session.pending = (member, how, heard)
             return
         if not (addressed or interject):
             return
         session.replying = True
         try:
-            todo: tuple | None = (member, how, not addressed)
+            todo: tuple | None = (member, how, heard, not addressed)
             while todo is not None:
-                who, kind, inter = todo
+                who, kind, heard_at, inter = todo
                 if inter:
                     session.last_decided = time.monotonic()
+                session.heard_at = heard_at
                 spoke = await self._reply(guild, session, cfg, who, interject=inter, how=kind)
                 if spoke:
                     session.last_spoke, session.heard_since = time.monotonic(), 0
@@ -371,7 +380,7 @@ class Listener(commands.Cog):
         me = guild.me.display_name
         queue: asyncio.Queue = asyncio.Queue()
         stats = {"first_text": None, "first_audio": None}
-        player = asyncio.create_task(self._play_queue(vc, queue, cfg, stats))
+        player = asyncio.create_task(self._play_queue(vc, queue, cfg, stats, session))
         buf = {"text": "", "said": ""}
 
         def push(sentence: str) -> None:
@@ -450,14 +459,39 @@ class Listener(commands.Cog):
                      stats["first_audio"] - (ft or t0))
         return spoke
 
-    async def _play_queue(self, vc, queue: asyncio.Queue, cfg: ChatterConfig, stats: dict) -> bool:  # noqa: ANN001
-        """Проигрывает озвученные фразы строго по порядку, пока в очереди не окажется None."""
+    async def _play_queue(self, vc, queue: asyncio.Queue, cfg: ChatterConfig, stats: dict,  # noqa: ANN001
+                          session: Session | None = None) -> bool:
+        """Проигрывает озвученные фразы строго по порядку, пока в очереди не окажется None. Не перебивает: ждёт,
+        пока люди договорят; если человек продолжил мысль — бросает устаревший ответ; если бота перебили — замолкает."""
         loop = asyncio.get_running_loop()
         spoke = False
+        dropped = False
+
+        async def drain() -> None:
+            while True:
+                job = await queue.get()
+                if job is None:
+                    return
+                job.cancel()
+
         while True:
             job = await queue.get()
             if job is None:
                 return spoke
+            if dropped:
+                job.cancel()
+                continue
+            if session is not None and not spoke:
+                # Кто-то ещё говорит — ждём паузу (до 8 с), а не влезаем посреди фразы.
+                waited = time.monotonic()
+                while session.collector.speaking(time.monotonic()) and time.monotonic() - waited < 8:
+                    await asyncio.sleep(0.1)
+                if session.pending is not None:  # человек договорил ещё что-то — ответим на всё сразу
+                    log.info("Слушание: собеседник продолжил мысль — отвечу на всё целиком")
+                    job.cancel()
+                    dropped = True
+                    await drain()
+                    return spoke
             try:
                 data, engine = await job
             except TtsError as exc:
@@ -489,9 +523,17 @@ class Listener(commands.Cog):
                 io.BytesIO(d), pipe=True, executable=ffmpeg_executable(), options=o))
             vc.play(source, after=lambda _e: loop.call_soon_threadsafe(done.set))
             spoke = True
-            try:
-                await asyncio.wait_for(done.wait(), 60)
-            except asyncio.TimeoutError:
+            started = time.monotonic()
+            while not done.is_set() and time.monotonic() - started < 60:
+                await asyncio.sleep(0.1)
+                # Перебили (говорят дольше ~0,3 с) — замолкаем и слушаем, как живой человек.
+                if session is not None and cfg.listen_barge_in and session.collector.speaking(
+                        time.monotonic(), window=0.25, min_voiced=15):
+                    log.info("Слушание: меня перебили — замолкаю")
+                    vc.stop()
+                    await drain()
+                    return spoke
+            if not done.is_set():
                 vc.stop()
 
     # ------------------------------------------------------------ автоматически и из Discord

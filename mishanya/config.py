@@ -52,7 +52,8 @@ class Settings:
     # Распознавание речи (слушание голоса). Пусто — те же ключ и адрес, что для DeepSeek/Inferhold.
     stt_api_key: str = ""
     stt_base_url: str = ""
-    stt_model: str = "gpt-4o-transcribe"
+    stt_model: str = "gpt-4o-mini-transcribe"  # быстрее; если у сервиса её нет — откат на gpt-4o-transcribe
+    stt_model_explicit: bool = False  # задана ли модель в .env (тогда никаких откатов)
     # Модель со зрением для скриншотов (например gpt-4o-mini у Inferhold). Пусто — картинки не смотрит.
     vision_model: str = ""
     # Озвучка: ElevenLabs (свой ключ) и OpenAI-совместимый /audio/speech (по умолчанию ключ и адрес DeepSeek/Inferhold)
@@ -153,7 +154,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         deepseek_base_url=(os.getenv("DEEPSEEK_BASE_URL", "").strip() or "https://api.deepseek.com").rstrip("/"),
         stt_api_key=os.getenv("STT_API_KEY", "").strip(),
         stt_base_url=os.getenv("STT_BASE_URL", "").strip().rstrip("/"),
-        stt_model=os.getenv("STT_MODEL", "").strip() or "gpt-4o-transcribe",
+        stt_model=os.getenv("STT_MODEL", "").strip() or "gpt-4o-mini-transcribe",
+        stt_model_explicit=bool(os.getenv("STT_MODEL", "").strip()),
         vision_model=os.getenv("VISION_MODEL", "").strip(),
         elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", "").strip(),
         tts_api_key=os.getenv("TTS_API_KEY", "").strip(),
