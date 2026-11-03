@@ -16,6 +16,14 @@ export function SpaceBackground() {
     let stars: Star[] = [];
     let dust: Dust[] = [];
     const starLayer = document.createElement("canvas");
+    // Цвета свечения и туманностей берём из текущей цветовой темы (--accent-rgb, --grad-b-rgb).
+    let accent = "139,124,248", second = "235,69,158";
+    const readColors = () => {
+      const css = getComputedStyle(document.documentElement);
+      accent = css.getPropertyValue("--accent-rgb").trim() || accent;
+      second = css.getPropertyValue("--grad-b-rgb").trim() || second;
+    };
+    readColors();
 
     const spawn = (outer: boolean): Dust => {
       const rad = outer ? 2.4 + Math.random() * 3.2 : 1.35 + Math.random() ** 1.6 * 4.3; // в радиусах горизонта
@@ -40,8 +48,8 @@ export function SpaceBackground() {
       s.setTransform(dpr, 0, 0, dpr, 0, 0);
       s.clearRect(0, 0, w, h);
       // туманности
-      for (const [x, y, rr, col] of [[w * 0.15, h * 0.8, w * 0.35, "rgba(120,70,220,0.07)"], [w * 0.85, h * 0.9, w * 0.3, "rgba(230,70,150,0.05)"],
-        [w * 0.4, h * 0.1, w * 0.3, "rgba(60,110,230,0.05)"]] as [number, number, number, string][]) {
+      for (const [x, y, rr, col] of [[w * 0.15, h * 0.8, w * 0.35, `rgba(${accent},0.08)`], [w * 0.85, h * 0.9, w * 0.3, `rgba(${second},0.05)`],
+        [w * 0.4, h * 0.1, w * 0.3, `rgba(${accent},0.04)`]] as [number, number, number, string][]) {
         const g = s.createRadialGradient(x, y, 0, x, y, rr);
         g.addColorStop(0, col); g.addColorStop(1, "rgba(0,0,0,0)");
         s.fillStyle = g; s.fillRect(0, 0, w, h);
@@ -95,7 +103,7 @@ export function SpaceBackground() {
       // свечение вокруг дыры
       const glow = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 6);
       glow.addColorStop(0, "rgba(255,150,60,0.22)");
-      glow.addColorStop(0.25, "rgba(170,80,240,0.10)");
+      glow.addColorStop(0.25, `rgba(${accent},0.10)`);
       glow.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = glow;
       ctx.fillRect(cx - R * 6, cy - R * 6, R * 12, R * 12);
@@ -151,7 +159,11 @@ export function SpaceBackground() {
     else raf = requestAnimationFrame(tick);
     window.addEventListener("resize", onResize);
     document.addEventListener("visibilitychange", onVisibility);
+    // Сменили цветовую тему — перекрашиваем туманности и свечение.
+    const themeWatch = new MutationObserver(() => { readColors(); onResize(); });
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-palette", "data-theme"] });
     return () => {
+      themeWatch.disconnect();
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisibility);

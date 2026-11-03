@@ -1,10 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { applyTheme, readTheme } from "./ui";
+import { applyPalette, applyTheme, readPalette, readTheme } from "./ui";
 import "./styles.css";
 
 applyTheme(readTheme());
+applyPalette(readPalette());
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

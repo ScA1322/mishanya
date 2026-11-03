@@ -5,7 +5,7 @@ import { useApi } from "./hooks";
 import type { DiscordResources, GuildSummary, Meta } from "./types";
 import { Icon, type IconName } from "./icons";
 import { SnowProvider, SnowToggle } from "./snow";
-import { ConfirmProvider, ErrorBox, GuildIcon, Loading, Picker, ResourcesCtx, ThemeToggle, ToastProvider, useToast } from "./ui";
+import { ConfirmProvider, ErrorBox, GuildIcon, Loading, PaletteToggle, Picker, ResourcesCtx, ThemeToggle, ToastProvider, useToast } from "./ui";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Servers from "./pages/Servers";
@@ -110,6 +110,7 @@ function Sidebar({ open, onNavigate, onLogout }: { open: boolean; onNavigate: ()
       )}
       <div className="sidebar-footer">
         <ThemeToggle />
+        <PaletteToggle />
         <SnowToggle />
         <button className="nav-link nav-button" onClick={onLogout}>
           <Icon name="logout" size={17} className="nav-icon" />Выйти

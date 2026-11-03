@@ -660,6 +660,51 @@ export function applyTheme(t: Theme) {
   else document.documentElement.dataset.theme = t;
 }
 
+export const PALETTES: [string, string, string, string][] = [
+  // id, название, цвет 1, цвет 2
+  ["cosmos", "Космос", "#8b7cf8", "#b46cf0"],
+  ["blood", "Кровавый Император", "#e5484d", "#ff8a3d"],
+  ["neon", "Неон", "#22d3ee", "#e879f9"],
+  ["matrix", "Матрица", "#16a34a", "#a3e635"],
+  ["gold", "Золото", "#e0b04a", "#f97316"],
+  ["ocean", "Океан", "#3b82f6", "#06b6d4"],
+  ["sakura", "Сакура", "#f472b6", "#c084fc"],
+  ["mono", "Графит", "#e5e5e5", "#737373"],
+];
+const PALETTE_KEY = "mishanya-palette";
+
+export function readPalette(): string {
+  try {
+    const p = localStorage.getItem(PALETTE_KEY) ?? "cosmos";
+    return PALETTES.some(([id]) => id === p) ? p : "cosmos";
+  } catch {
+    return "cosmos";
+  }
+}
+
+export function applyPalette(p: string) {
+  if (p === "cosmos") delete document.documentElement.dataset.palette;
+  else document.documentElement.dataset.palette = p;
+}
+
+export function PaletteToggle() {
+  const [palette, setPalette] = useState(readPalette);
+  const pick = (p: string) => {
+    setPalette(p);
+    applyPalette(p);
+    try { localStorage.setItem(PALETTE_KEY, p); } catch { /* до перезагрузки */ }
+  };
+  return (
+    <div className="palettes" role="radiogroup" aria-label="Цветовая тема">
+      {PALETTES.map(([id, name, a, b]) => (
+        <button key={id} type="button" role="radio" aria-checked={palette === id} title={`${name} (для тёмной темы)`}
+          className={`palette-btn${palette === id ? " active" : ""}`} style={{ background: `linear-gradient(135deg, ${a}, ${b})` }}
+          onClick={() => pick(id)} />
+      ))}
+    </div>
+  );
+}
+
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(readTheme);
   const set = (t: Theme) => {
