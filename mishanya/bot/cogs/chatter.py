@@ -21,6 +21,7 @@ from .mind import collect_images, read_history
 from ..utils import UserFacingError, ok_embed, require_guild, respond
 
 log = logging.getLogger(__name__)
+SCAN_QUIET_SECONDS = 4  # пауза в канале, после которой бот обдумывает переписку
 
 
 class ChannelState:
@@ -38,6 +39,10 @@ class Chatter(commands.Cog):
         self.dialog: dict[tuple[int, int], float] = {}  # (канал, человек) → до какого времени идёт разговор
         self.locks: dict[int, asyncio.Lock] = {}
         self.waiting: dict[int, int] = {}  # сколько ответов ждут очереди в канале
+        self.scan_latest: dict[int, discord.Message] = {}  # последнее необработанное сообщение канала
+        self.scan_tasks: dict[int, asyncio.Task] = {}
+        self.scan_last: dict[int, float] = {}  # когда бот последний раз обдумывал канал
+        self.scan_at: dict[int, float] = {}  # когда в канал пришло последнее сообщение
         self.mention_cd: dict[tuple[int, int], float] = {}
         self.busy: set[int] = set()  # каналы, где ответ уже готовится
         self.speaking: set[int] = set()  # серверы, где бот сейчас говорит в голосовом канале
@@ -90,6 +95,9 @@ class Chatter(commands.Cog):
             state.messages_since, state.last_at = 0, now
             self._background(self._answer(message, cfg, explicit))
             return
+        if cfg.chat_mode == "ai" and cfg.use_ai and self.app.settings.deepseek_api_key:
+            self._schedule_scan(message, cfg)
+            return
         if state.messages_since < cfg.min_messages or now - state.last_at < cfg.cooldown_minutes * 60:
             return
         if random.random() * 100 >= cfg.chance_percent:
@@ -99,6 +107,39 @@ class Chatter(commands.Cog):
         state.messages_since, state.last_at = 0, now
         self.busy.add(message.channel.id)
         self._background(self._speak(message, cfg, False))
+
+    def _schedule_scan(self, message: discord.Message, cfg: ChatterConfig) -> None:
+        """Бот читает все сообщения: когда в канале наступает пауза, он смотрит свежую переписку и сам решает,
+        заговорить ли (по смыслу ему, интересно, есть что сказать). Не чаще раза в chat_decide_seconds на канал."""
+        cid = message.channel.id
+        self.scan_latest[cid] = message
+        self.scan_at[cid] = time.monotonic()
+        if cid in self.scan_tasks:
+            return
+
+        async def run() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(SCAN_QUIET_SECONDS)  # дождаться паузы — вдруг допишут
+                    latest = self.scan_latest.get(cid)
+                    if latest is None:
+                        return
+                    if time.monotonic() - self.scan_at.get(cid, 0) < SCAN_QUIET_SECONDS - 0.2:
+                        continue  # ещё пишут — ждём паузу
+                    wait = cfg.chat_decide_seconds - (time.monotonic() - self.scan_last.get(cid, 0))
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                        latest = self.scan_latest.get(cid, latest)
+                    self.scan_latest.pop(cid, None)
+                    if cid in self.busy or not self._take_hourly(latest.guild.id, cfg.max_per_hour * 4, time.monotonic()):  # type: ignore[union-attr]
+                        return
+                    self.scan_last[cid] = time.monotonic()
+                    await self._answer(latest, cfg, explicit=False, scan=True)
+                    return
+            finally:
+                self.scan_tasks.pop(cid, None)
+
+        self.scan_tasks[cid] = asyncio.create_task(run())
 
     def _addressed(self, message: discord.Message, cfg: ChatterConfig) -> bool:
         me = self.bot.user
@@ -126,14 +167,14 @@ class Chatter(commands.Cog):
         q.append(now)
         return True
 
-    async def _answer(self, message: discord.Message, cfg: ChatterConfig, explicit: bool) -> None:
+    async def _answer(self, message: discord.Message, cfg: ChatterConfig, explicit: bool, scan: bool = False) -> None:
         """Ответ в разговоре: с памятью, картинками и действиями (обиды, перемещение). В канале — по очереди."""
         channel = message.channel
         lock = self.locks.setdefault(channel.id, asyncio.Lock())
         self.waiting[channel.id] = self.waiting.get(channel.id, 0) + 1
         try:
             async with lock:
-                text, notes = await self.think(message, cfg, explicit)
+                text, notes = await self.think(message, cfg, explicit, scan)
                 if not text and not notes:
                     return
                 body = "\n".join(t for t in [text, *notes] if t)[:2000]
@@ -150,7 +191,7 @@ class Chatter(commands.Cog):
             self.waiting[channel.id] -= 1
 
     async def think(self, message: discord.Message, cfg: ChatterConfig,
-                    explicit: bool) -> tuple[str | None, list[str]]:
+                    explicit: bool, scan: bool = False) -> tuple[str | None, list[str]]:
         """Что ответить человеку, который говорит с ботом. Возвращает (реплика, заметки о сделанном)."""
         s = self.app.settings
         mind = self.bot.get_cog("Mind")
@@ -158,9 +199,15 @@ class Chatter(commands.Cog):
         if cfg.use_ai and s.deepseek_api_key and mind is not None:
             me = channel.guild.me.display_name  # type: ignore[union-attr]
             history = await read_history(channel, cfg.context_messages, self.bot.user.id)  # type: ignore[union-attr]
-            task = ("Последнее сообщение обращено к тебе — ответь на него." if explicit else
-                    "Ты только что разговаривал с автором последнего сообщения. Если оно продолжает разговор с тобой — "
-                    "ответь; если он явно говорит не с тобой — оставь reply пустым.")
+            if scan:
+                task = ("Ты читаешь чат, к тебе прямо не обращались. Реши сам, заговорить ли: если последние сообщения "
+                        "по смыслу тебе (даже без твоего имени), или речь о тебе, или тебе реально интересно, или есть что "
+                        "сказать смешного и дерзкого — ответь. Иначе оставь reply пустым: молчать нормально, не влезай "
+                        "ради галочки, отвечай примерно на каждое пятое-десятое окно, не чаще.")
+            else:
+                task = ("Последнее сообщение обращено к тебе — ответь на него." if explicit else
+                        "Ты только что разговаривал с автором последнего сообщения. Если оно продолжает разговор с тобой — "
+                        "ответь; если он явно говорит не с тобой — оставь reply пустым.")
             task += " Это живой диалог: отвечай по сути и не повторяйся; если просят подробнее — можно длиннее."
             if mind.address(message.content, message.author, cfg) == "alias_bad":  # type: ignore[attr-defined]
                 task += " " + mind.alias_scold(cfg)  # type: ignore[attr-defined]

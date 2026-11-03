@@ -663,3 +663,28 @@ async def test_dm_contacts_and_confidentiality(app, monkeypatch):
     await cog.brain(guild, boss, cfg, history="Босс: кто писал в лс?", channel_name="общий", task="t")
     assert "КОНФИДЕНЦИАЛЬНОСТЬ" in calls[0]["context"] and "spy_42" not in calls[0]["context"]
     assert "без утайки" in calls[1]["context"] and "@spy_42" in calls[1]["context"]
+
+
+async def test_chat_scan_waits_for_pause_and_batches(monkeypatch):
+    """Бот читает все сообщения, ждёт паузу и обдумывает канал один раз за пачку сообщений."""
+    import asyncio as _a
+
+    from mishanya.bot.cogs import chatter as C
+
+    monkeypatch.setattr(C, "SCAN_QUIET_SECONDS", 0.05)
+    cog = C.Chatter.__new__(C.Chatter)
+    cog.app = SimpleNamespace(settings=SimpleNamespace(deepseek_api_key="k"))
+    cog.scan_latest, cog.scan_tasks, cog.scan_last, cog.scan_at, cog.busy, cog.hourly = {}, {}, {}, {}, set(), {}
+    seen = []
+
+    async def answer(msg, cfg, explicit, scan=False):  # noqa: ANN001
+        seen.append((msg.content, explicit, scan))
+
+    cog._answer = answer
+    cfg = ChatterConfig(enabled=True, chat_decide_seconds=5)
+    guild = SimpleNamespace(id=1)
+    for text in ("привет", "как дела", "кто тут главный?"):
+        cog._schedule_scan(SimpleNamespace(channel=SimpleNamespace(id=10), guild=guild, content=text), cfg)
+        await _a.sleep(0.01)
+    await _a.sleep(0.2)
+    assert seen == [("кто тут главный?", False, True)]  # одно решение по последнему сообщению после паузы

@@ -438,6 +438,9 @@ class ChatterConfig(Strict):
     cooldown_minutes: int = Field(15, ge=0, le=1440)  # пауза между вмешательствами в одном канале
     max_per_hour: int = Field(6, ge=1, le=60)  # на весь сервер
     reply_on_mention: bool = True  # отвечать, если бота упомянули или ответили на его сообщение
+    # Как вмешиваться без обращения: ai — читает все сообщения и сам решает, когда заговорить; chance — случайно
+    chat_mode: Literal["ai", "chance"] = "ai"
+    chat_decide_seconds: int = Field(20, ge=5, le=3600)  # в одном канале обдумывает не чаще раза во столько секунд
     reply_to_message: bool = False  # вмешиваясь, отвечать «ответом» на последнее сообщение
     use_ai: bool = True
     system_prompt: str = Field(DEFAULT_CHATTER_PROMPT, max_length=4000)

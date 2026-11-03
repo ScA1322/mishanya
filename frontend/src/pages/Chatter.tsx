@@ -9,7 +9,7 @@ import { Card, ChannelSelect, ErrorBox, Field, Loading, MultiChannelSelect, Numb
 
 interface ChatterConfig extends MindConfig {
   enabled: boolean; channels: string[]; chance_percent: number; min_messages: number; cooldown_minutes: number; max_per_hour: number;
-  reply_on_mention: boolean; reply_to_message: boolean; use_ai: boolean; system_prompt: string; context_messages: number;
+  reply_on_mention: boolean; reply_to_message: boolean; chat_mode: "ai" | "chance"; chat_decide_seconds: number; use_ai: boolean; system_prompt: string; context_messages: number;
   temperature: number; max_tokens: number; phrases: string[]; fallback_to_phrases: boolean;
   voice_enabled: boolean; voice_channels: string[]; voice_interval_minutes: number; voice_max_per_hour: number;
   voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google" | "elevenlabs" | "openai"; voice_eleven_id: string; voice_openai: string; voice_name: "dmitry" | "svetlana";
@@ -387,6 +387,15 @@ export default function Chatter() {
             checked={d.reply_on_mention} onChange={(v) => set("reply_on_mention", v)} />
           <ToggleRow title="Вмешиваться «ответом»" hint="Сообщение будет ответом на последнее сообщение в чате, а не отдельной репликой"
             checked={d.reply_to_message} onChange={(v) => set("reply_to_message", v)} />
+          <div className="grid grid-2 mt">
+            <Field label="Как вмешиваться без обращения" hint="«Сам решает» — бот читает все сообщения во всех каналах и, когда наступает пауза, решает, заговорить ли: если сообщение по смыслу ему, если интересно или есть что сказать">
+              <select className="select" value={d.chat_mode} onChange={(e) => set("chat_mode", e.target.value as ChatterConfig["chat_mode"])}>
+                <option value="ai">Читает всё и сам решает (рекомендуется)</option>
+                <option value="chance">Случайно, по шансу (настройки ниже)</option>
+              </select>
+            </Field>
+            {d.chat_mode === "ai" && <Field label="Обдумывать канал не чаще, чем раз в, сек" hint="Меньше — живее, но дороже"><NumberInput value={d.chat_decide_seconds} min={5} max={3600} onChange={(v) => set("chat_decide_seconds", v)} /></Field>}
+          </div>
           <Field label="Каналы" hint="Пусто — во всех каналах, где бот может писать"><MultiChannelSelect value={d.channels} onChange={(v) => set("channels", v)} /></Field>
         </Card>
 
