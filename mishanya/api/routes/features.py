@@ -627,6 +627,16 @@ async def mind_overview(request: Request, guild_id: int = Depends(guild_id_dep))
     }
 
 
+@router.get("/mind/pc-programs")
+async def mind_pc_programs(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
+    """Что бот может открыть на этом компьютере (ярлыки «Пуска» и свои программы) и что сейчас запущено."""
+    from ...services import pc
+
+    cfg = await get_app(request).config.get_typed(guild_id, "chatter", ChatterConfig)
+    items = await asyncio.to_thread(pc.catalog, [(p.name, p.target) for p in cfg.pc_programs], cfg.pc_start_menu)
+    return {"programs": sorted(items, key=str.lower), "running": await asyncio.to_thread(pc.running_programs)}
+
+
 @router.post("/mind/unignore/{user_id}")
 async def mind_unignore(request: Request, user_id: int, guild_id: int = Depends(guild_id_dep)) -> dict:
     app = get_app(request)

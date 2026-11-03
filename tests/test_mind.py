@@ -441,3 +441,43 @@ async def test_stranger_join_request_flow(app, monkeypatch):
     assert cog.joins[(GID, 5)]["status"] == "accepted"
     await cog.decide_join(click, False, GID, 5)
     assert responses[-1] == "Уже решено другим доверенным."
+
+
+def test_pc_open_close(monkeypatch, tmp_path):
+    """Открывает только из каталога, закрывает по названию, системные процессы и бота не трогает."""
+    from mishanya.services import pc
+
+    exe = tmp_path / "Steam.lnk"
+    exe.write_text("x")
+    opened, killed = [], []
+    monkeypatch.setattr(pc.sys, "platform", "win32")
+    monkeypatch.setattr(pc.os, "startfile", lambda t: opened.append(t), raising=False)
+    items = {"Steam": str(exe), "The Isle": "steam://rungameid/376210"}
+    assert pc.open_program("steam", items) == "Steam" and opened == [str(exe)]
+    assert pc.open_program("the isle", items) == "The Isle" and opened[-1] == "steam://rungameid/376210"
+    with pytest.raises(pc.PcError, match="Не нашёл"):
+        pc.open_program("format c:", items)
+
+    monkeypatch.setattr(pc, "running_programs", lambda: ["Discord.exe", "steam.exe", "steamwebhelper.exe"])
+    monkeypatch.setattr(pc.subprocess, "run", lambda args, **kw: (killed.append(args[2]), SimpleNamespace(returncode=0))[1])
+    assert pc.close_program("discord") == "Discord.exe" and killed == ["Discord.exe"]
+    assert pc.close_program("steam") == "steam.exe"
+    with pytest.raises(pc.PcError, match="Не нашёл"):
+        pc.close_program("explorer")  # системные процессы даже не видны
+
+
+async def test_pc_only_for_trusted(app, monkeypatch):
+    cog, _, _ = _cog(app, monkeypatch, [])
+    app.settings.owner_id = 42
+    cfg = ChatterConfig(enabled=True, confidants=["999999999999999999"])
+    stranger = SimpleNamespace(id=5)
+    assert "только доверенные" in await cog._pc_action(stranger, "pc_open", {"program": "steam"}, cfg)
+    monkeypatch.setattr("mishanya.services.pc.open_program", lambda name, items: "Steam")
+
+    async def catalog(c):  # noqa: ANN001
+        return {"Steam": "x"}
+
+    monkeypatch.setattr(cog, "pc_catalog", catalog)
+    assert "Открыл" in await cog._pc_action(SimpleNamespace(id=42), "pc_open", {"program": "steam"}, cfg)  # владелец
+    cfg.pc_control = False
+    assert await cog._pc_action(SimpleNamespace(id=42), "pc_open", {"program": "steam"}, cfg) is None

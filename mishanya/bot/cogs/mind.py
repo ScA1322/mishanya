@@ -19,6 +19,7 @@ from discord.ext import commands, tasks
 from ...db.models import utcnow
 from ...schemas import ChatterConfig
 from ...services.chatter import ChatterError, clean_reply, format_history, generate
+from ...services import pc
 from ...services.mind import ACTIONS_FORMAT, best_match, normalize, open_steam_game, parse_actions, parse_json, \
     trigger_matches
 from ..client import MishanyaBot
@@ -306,14 +307,33 @@ class Mind(commands.Cog):
         rel = await self.app.mind.relation(guild_id, user_id)
         return bool(rel and rel.ignore_until and rel.ignore_until > utcnow())
 
+    def is_trusted(self, user_id: int, cfg: ChatterConfig) -> bool:
+        """Доверенный человек или владелец бота (OWNER_ID в .env)."""
+        return str(user_id) in cfg.confidants or user_id == self.app.settings.owner_id
+
+    async def pc_catalog(self, cfg: ChatterConfig) -> dict[str, str]:
+        key = (cfg.pc_start_menu, tuple((p.name, p.target) for p in cfg.pc_programs))
+        cached = getattr(self, "_pc_cache", None)
+        if cached and cached[0] == key and time.monotonic() - cached[1] < 300:
+            return cached[2]
+        items = await asyncio.to_thread(pc.catalog, [(p.name, p.target) for p in cfg.pc_programs], cfg.pc_start_menu)
+        self._pc_cache = (key, time.monotonic(), items)
+        return items
+
     async def brain(self, guild: discord.Guild, author: discord.Member | None, cfg: ChatterConfig, *,
                     history: str, channel_name: str, task: str, images: list[str] | None = None,
-                    voice: bool = False, channel: discord.abc.Messageable | None = None) -> tuple[str, list[str]]:
+                    voice: bool = False, channel: discord.abc.Messageable | None = None,
+                    extra_context: str = "") -> tuple[str, list[str]]:
         """Ответ модели + выполнение действий. Возвращает (реплика, заметки о сделанном)."""
         me = guild.me.display_name
         ids = [author.id] if author else []
         memory = await self.app.mind.recall(guild.id, ids) if cfg.memory_enabled else None
-        context = self._server_context(guild, author)
+        context = self._server_context(guild, author) + (f"\n{extra_context}" if extra_context else "")
+        if author is not None and cfg.pc_control and self.is_trusted(author.id, cfg):
+            names = sorted(await self.pc_catalog(cfg))
+            context += (f"\n{author.display_name} — твой доверенный человек: по его просьбе можешь открывать и закрывать "
+                        "программы на компьютере владельца. Можно открыть: " + (", ".join(names[:120]) or "ничего")
+                        + ". Закрыть можно любую запущенную программу по названию.")
         ignored = False
         if author is not None:
             rel = await self.app.mind.relation(guild.id, author.id)
@@ -542,6 +562,10 @@ class Mind(commands.Cog):
                     note = await self._member_action(requester, kind, a, cfg)
                     if note:
                         notes.append(note)
+                elif kind in ("pc_open", "pc_close"):
+                    note = await self._pc_action(requester, kind, a, cfg)
+                    if note:
+                        notes.append(note)
                 elif kind == "purge":
                     note = await self._purge(requester, a, cfg, channel)
                     if note:
@@ -671,6 +695,26 @@ class Mind(commands.Cog):
             text = f"🔨 Забанил **{who.display_name}**. За: {why}."
         await self.notify(guild, cfg, f"{text} («{guild.name}», @{who.name}, попросил {requester.display_name})")
         return text
+
+    async def _pc_action(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig) -> str | None:
+        if not cfg.pc_control:
+            return None
+        if not self.is_trusted(requester.id, cfg):
+            log.info("Компьютер: %s просил %s «%s», но он не доверенный", requester, kind, a.get("program"))
+            return "⚠️ Компьютером владельца командуют только доверенные люди."
+        name = str(a.get("program") or "").strip()
+        if not name:
+            return None
+        try:
+            if kind == "pc_open":
+                opened = await asyncio.to_thread(pc.open_program, name, await self.pc_catalog(cfg))
+                return f"🖥️ Открыл на компьютере: **{opened}**."
+            closed = await asyncio.to_thread(pc.close_program, name)
+            return f"🖥️ Закрыл на компьютере: **{closed}**."
+        except pc.PcError as exc:
+            return f"⚠️ {exc}"
+        except OSError as exc:
+            return f"⚠️ Windows не дал: {exc}"
 
     async def _purge(self, requester: discord.Member, a: dict, cfg: ChatterConfig,
                      channel: discord.abc.Messageable | None) -> str | None:
@@ -1174,18 +1218,19 @@ class Mind(commands.Cog):
                    + (f"На кого ты сейчас обижен: {'; '.join(grudges)}\n" if grudges else ""))
         try:
             async with message.channel.typing():
-                text = await self._llm(cfg, history=format_history(history, me), channel="личка", bot_name=me,
-                                       context=context, images=await collect_images(message, look_back=False),
-                                       memory=await self.app.mind.recall(guild.id, [member.id]) if cfg.memory_enabled else None,
-                                       task="Ответь на последнее сообщение в личке, в своём стиле.",
-                                       max_tokens=max(cfg.max_tokens, 300))
+                text, notes = await self.brain(guild, member, cfg, history=format_history(history, me),
+                                               channel_name="личка", extra_context=context,
+                                               images=await collect_images(message, look_back=False),
+                                               task="Ответь на последнее сообщение в личке, в своём стиле.")
         except ChatterError as exc:
             log.warning("Личка: %s", exc)
             return
-        try:
-            await message.channel.send(clean_reply(text, me), allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            pass
+        body = "\n".join(t for t in [text, *notes] if t)[:2000]
+        if body:
+            try:
+                await message.channel.send(body, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
 
 
 async def setup(bot: MishanyaBot) -> None:

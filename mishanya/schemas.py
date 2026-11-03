@@ -401,6 +401,13 @@ class VoiceTrigger(Strict):
     title: str = Field("", max_length=100)
 
 
+class PcProgram(Strict):
+    """Программа, которую бот может открыть на компьютере владельца: путь к .exe/.lnk/.url или ссылка Steam."""
+    name: str = Field(min_length=1, max_length=60)
+    target: str = Field(min_length=3, max_length=400,
+                        pattern=r"(?i)^(steam://rungameid/\d{1,10}|[A-Za-z]:\\[^<>\"|?*]+\.(exe|lnk|url))$")
+
+
 class ChatterConfig(Strict):
     enabled: bool = False
     channels: list[Snowflake] = Field(default_factory=list, max_length=50)  # пусто — все текстовые каналы
@@ -475,7 +482,11 @@ class ChatterConfig(Strict):
     # Чужак долго переписывается и просится на сервер → бот сам решает, передать ли просьбу доверенным
     join_requests: bool = True
     join_min_messages: int = Field(8, ge=1, le=200)  # сколько он должен написать боту, прежде чем просьбу рассмотрят
-    join_retry_hours: int = Field(6, ge=0, le=720)  # после отказа доверенных можно просить снова через столько часов
+    join_retry_hours: int = Field(6, ge=0, le=720)
+    # Компьютер владельца: открыть или закрыть программу по просьбе доверенного (или владельца)
+    pc_control: bool = True
+    pc_start_menu: bool = True  # всё, что есть в меню «Пуск»
+    pc_programs: list[PcProgram] = Field(default_factory=list, max_length=50)  # свои программы и игры  # после отказа доверенных можно просить снова через столько часов
     report_inactive_days: int = Field(7, ge=0, le=365)  # 0 — не докладывать
     gossip_hours: int = Field(12, ge=0, le=168)  # 0 — не сплетничать
     # Голосовые триггеры (работают, пока бот слушает)

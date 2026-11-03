@@ -15,6 +15,7 @@ export interface MindConfig {
   control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean;
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
   join_requests: boolean; join_min_messages: number; join_retry_hours: number;
+  pc_control: boolean; pc_start_menu: boolean; pc_programs: { name: string; target: string }[];
   report_inactive_days: number; gossip_hours: number;
   voice_triggers: VoiceTrigger[]; trigger_cooldown_minutes: number;
   listen_wake_words: string[]; listen_interject_percent: number; listen_interject_seconds: number;
@@ -297,6 +298,41 @@ export function CharacterCard<C extends MindConfig>({ guildId, d, set }: { guild
           ))}
         </div>
       ) : <div className="small muted">Пока ко всем относится ровно.</div>}
+    </Card>
+  );
+}
+
+export function PcCard<C extends MindConfig>({ guildId, d, set }: { guildId: string; d: C; set: Setter<C> }) {
+  const progs = useApi<{ programs: string[]; running: string[] }>(`/api/guilds/${guildId}/mind/pc-programs`, [guildId]);
+  const upd = (i: number, patch: Partial<{ name: string; target: string }>) =>
+    set("pc_programs", d.pc_programs.map((p, j) => (j === i ? { ...p, ...patch } : p)) as C["pc_programs"]);
+  return (
+    <Card title="Компьютер владельца" subtitle="«Император, открой стим» / «закрой дискорд» — в чате, голосом или в личке. Слушается только доверенных людей и владельца (OWNER_ID). Открывает только установленные программы и то, что вы добавили ниже; закрывает запущенные, но системные процессы и сам бот защищены. Произвольные команды не выполняет.">
+      <ToggleRow title="Управлять программами на компьютере" checked={d.pc_control} onChange={(v) => set("pc_control", v)} />
+      {d.pc_control && (
+        <>
+          <ToggleRow title="Всё из меню «Пуск»" hint="Бот сможет открыть любую программу, у которой есть ярлык в «Пуске»" checked={d.pc_start_menu} onChange={(v) => set("pc_start_menu", v)} />
+          <h3 className="mt">Свои программы и игры</h3>
+          <div className="small muted">Путь к .exe, .lnk или .url (например <code>C:\Games\Game\game.exe</code>) или ссылка Steam <code>steam://rungameid/376210</code>.</div>
+          <div className="stack mt" style={{ gap: 8 }}>
+            {d.pc_programs.map((p, i) => (
+              <div key={i} className="row">
+                <input className="input" style={{ maxWidth: 200 }} placeholder="Название" value={p.name} onChange={(e) => upd(i, { name: e.target.value })} />
+                <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="Путь или steam://…" value={p.target} onChange={(e) => upd(i, { target: e.target.value.trim() })} />
+                <button className="btn btn-sm btn-ghost" onClick={() => set("pc_programs", d.pc_programs.filter((_, j) => j !== i) as C["pc_programs"])} aria-label="Удалить"><Icon name="trash" size={14} /></button>
+              </div>
+            ))}
+          </div>
+          {d.pc_programs.length < 50 && <button className="btn btn-sm mt" onClick={() => set("pc_programs", [...d.pc_programs, { name: "", target: "" }] as C["pc_programs"])}><Icon name="plus" size={14} />Добавить программу</button>}
+          {progs.data && (
+            <details className="mt">
+              <summary className="small muted">Что бот может открыть сейчас ({progs.data.programs.length}) и что запущено ({progs.data.running.length})</summary>
+              <div className="small mt"><b>Открыть:</b> {progs.data.programs.join(", ") || "ничего"}</div>
+              <div className="small mt"><b>Запущено:</b> {progs.data.running.join(", ") || "—"}</div>
+            </details>
+          )}
+        </>
+      )}
     </Card>
   );
 }
