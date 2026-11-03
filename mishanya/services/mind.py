@@ -1,6 +1,7 @@
 """«Разум» бота: память о людях и сервере, обиды, голосовая активность и разбор ответов модели с действиями."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -181,26 +182,36 @@ class MindService:
         self.db = db
 
     # память
+    @staticmethod
+    def _norm_hash(text: str) -> str:
+        return hashlib.sha1(normalize(text).encode()).hexdigest()
+
     async def remember(self, guild_id: int, items: list[tuple[int | None, str]], limit: int) -> int:
         """Сохраняет новые факты (без повторов) и обрезает память до limit, удаляя самые старые."""
         async with self.db.session() as s:
-            known = {normalize(t) for t in (await s.execute(
-                select(BotMemory.text).where(BotMemory.guild_id == guild_id))).scalars()}
             added = 0
+            fresh: set[str] = set()
             for user_id, text in items:
                 text = " ".join(text.split())[:300]
-                if len(text) < 5 or normalize(text) in known:
+                h = self._norm_hash(text)
+                if len(text) < 5 or h in fresh:
                     continue
-                known.add(normalize(text))
-                s.add(BotMemory(guild_id=guild_id, user_id=user_id, text=text))
+                exists = (await s.execute(select(BotMemory.id).where(
+                    BotMemory.guild_id == guild_id, BotMemory.norm == h).limit(1))).scalar()
+                if exists:
+                    continue
+                fresh.add(h)
+                s.add(BotMemory(guild_id=guild_id, user_id=user_id, text=text, norm=h))
                 added += 1
             await s.flush()
-            total = (await s.execute(select(func.count()).select_from(BotMemory)
-                                     .where(BotMemory.guild_id == guild_id))).scalar() or 0
-            if total > limit:
-                old = (await s.execute(select(BotMemory.id).where(BotMemory.guild_id == guild_id)
-                                       .order_by(BotMemory.id).limit(total - limit))).scalars().all()
-                await s.execute(delete(BotMemory).where(BotMemory.id.in_(old)))
+            if added:
+                total = (await s.execute(select(func.count()).select_from(BotMemory)
+                                         .where(BotMemory.guild_id == guild_id))).scalar() or 0
+                if total > limit:
+                    border = (await s.execute(select(BotMemory.id).where(BotMemory.guild_id == guild_id)
+                                              .order_by(BotMemory.id).offset(total - limit).limit(1))).scalar()
+                    if border is not None:
+                        await s.execute(delete(BotMemory).where(BotMemory.guild_id == guild_id, BotMemory.id < border))
             await s.commit()
             return added
 
@@ -211,22 +222,73 @@ class MindService:
                 q = q.where(BotMemory.user_id.in_(user_ids))
             return list((await s.execute(q.order_by(BotMemory.id.desc()).limit(limit))).scalars())
 
-    async def forget(self, guild_id: int, memory_id: int | None = None) -> int:
+    async def search(self, guild_id: int, *, user_id: int | None = None, general: bool = False, query: str = "",
+                     offset: int = 0, limit: int = 100) -> tuple[int, list[BotMemory]]:
+        """Факты для панели: одного человека, только «о сервере» или все; с поиском по тексту."""
+        async with self.db.session() as s:
+            cond = [BotMemory.guild_id == guild_id]
+            if user_id is not None:
+                cond.append(BotMemory.user_id == user_id)
+            elif general:
+                cond.append(BotMemory.user_id.is_(None))
+            for word in query.split()[:5]:
+                cond.append(BotMemory.text.ilike(f"%{word}%"))
+            total = (await s.execute(select(func.count()).select_from(BotMemory).where(*cond))).scalar() or 0
+            rows = (await s.execute(select(BotMemory).where(*cond).order_by(BotMemory.id.desc())
+                                    .offset(offset).limit(limit))).scalars()
+            return total, list(rows)
+
+    async def people(self, guild_id: int, limit: int = 500) -> tuple[int, int, list[tuple[int, int]]]:
+        """(всего фактов, фактов о сервере, [(человек, сколько фактов о нём)] — самые изученные сверху)."""
+        async with self.db.session() as s:
+            total = (await s.execute(select(func.count()).select_from(BotMemory)
+                                     .where(BotMemory.guild_id == guild_id))).scalar() or 0
+            general = (await s.execute(select(func.count()).select_from(BotMemory).where(
+                BotMemory.guild_id == guild_id, BotMemory.user_id.is_(None)))).scalar() or 0
+            n = func.count().label("n")
+            rows = (await s.execute(select(BotMemory.user_id, n).where(
+                BotMemory.guild_id == guild_id, BotMemory.user_id.is_not(None))
+                .group_by(BotMemory.user_id).order_by(n.desc()).limit(limit))).all()
+            return total, general, [(int(u), int(c)) for u, c in rows]
+
+    async def forget(self, guild_id: int, memory_id: int | None = None, user_id: int | None = None) -> int:
         async with self.db.session() as s:
             q = delete(BotMemory).where(BotMemory.guild_id == guild_id)
             if memory_id is not None:
                 q = q.where(BotMemory.id == memory_id)
+            if user_id is not None:
+                q = q.where(BotMemory.user_id == user_id)
             n = (await s.execute(q)).rowcount or 0
             await s.commit()
             return n
 
-    async def recall(self, guild_id: int, user_ids: list[int], per_user: int = 6, general: int = 10) -> list[str]:
-        """Что бот помнит о собеседниках и о сервере — для промпта."""
-        about = await self.memories(guild_id, user_ids, limit=per_user * max(1, len(user_ids))) if user_ids else []
-        recent = await self.memories(guild_id, limit=general + len(about))
-        seen = {m.id for m in about}
-        rows = about + [m for m in recent if m.id not in seen][:general]
-        return [m.text for m in rows]
+    async def recall(self, guild_id: int, user_ids: list[int], per_user: int = 10, general: int = 10,
+                     query: str = "") -> list[str]:
+        """Что бот помнит для разговора: о каждом собеседнике — свежие факты и подходящие к теме,
+        о сервере — так же. Из сотен тысяч фактов в промпт попадают несколько десятков нужных."""
+        words = [w for w in dict.fromkeys(normalize(query).split()) if len(w) >= 4][:6]
+        out: list[str] = []
+        seen: set[int] = set()
+        async with self.db.session() as s:
+            async def take(cond, n: int) -> None:  # noqa: ANN001
+                recent = (await s.execute(select(BotMemory).where(BotMemory.guild_id == guild_id, cond)
+                                          .order_by(BotMemory.id.desc()).limit(max(1, n // 2) if words else n))).scalars().all()
+                matched: list[BotMemory] = []
+                for w in words:
+                    if len(matched) >= n - len(recent):
+                        break
+                    matched += (await s.execute(select(BotMemory).where(
+                        BotMemory.guild_id == guild_id, cond, BotMemory.text.ilike(f"%{w[:max(4, len(w) - 2)]}%"))
+                        .order_by(BotMemory.id.desc()).limit(3))).scalars().all()
+                for m in [*matched, *recent][:n]:
+                    if m.id not in seen:
+                        seen.add(m.id)
+                        out.append(m.text)
+
+            for uid in user_ids[:6]:
+                await take(BotMemory.user_id == uid, per_user)
+            await take(BotMemory.user_id.is_(None) if user_ids else BotMemory.id.is_not(None), general)
+        return out
 
     # обиды
     async def grudge(self, guild_id: int, user_id: int) -> BotGrudge | None:

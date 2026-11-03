@@ -276,10 +276,15 @@ class BotMemory(Base):
     """Факт, который бот сам запомнил о сервере или участнике (его «саморазвитие»)."""
 
     __tablename__ = "bot_memory"
+    __table_args__ = (
+        Index("ix_bot_memory_guild_norm", "guild_id", "norm"),  # проверка повторов без чтения всей памяти
+        Index("ix_bot_memory_guild_user_id", "guild_id", "user_id", "id"),  # факты одного человека, новые сверху
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     guild_id: Mapped[int] = mapped_column(BigInteger, guild_fk(), index=True)
-    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)  # о ком факт; NULL — о сервере
     text: Mapped[str] = mapped_column(String(300))
+    norm: Mapped[str] = mapped_column(String(40), default="")  # хеш нормализованного текста
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

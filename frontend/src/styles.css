@@ -720,3 +720,9 @@ td { padding: 12px; }
   backdrop-filter: blur(10px) saturate(1.2);
 }
 :root[data-theme="dark"][data-space="on"] .login-card { backdrop-filter: blur(8px); }
+
+/* Фильтр памяти по людям */
+button.chip { cursor: pointer; font: inherit; font-size: 14.5px; padding: 5px 12px; color: var(--text); }
+button.chip:hover { border-color: var(--accent); }
+button.chip.chip-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+:root[data-theme="dark"] button.chip.chip-active { color: #fff; background: rgba(139, 124, 248, 0.25); }

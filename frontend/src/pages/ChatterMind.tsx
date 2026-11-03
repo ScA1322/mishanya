@@ -26,7 +26,7 @@ type Setter<C> = <K extends keyof C>(k: K, v: C[K]) => void;
 
 interface MemberRef { id: string; name: string; avatar_url: string | null }
 interface MindData {
-  memories: { id: number; text: string; user: MemberRef | null; created_at: string }[];
+  memory: { total: number; general: number; people: { user: MemberRef; count: number }[] };
   grudges: { user: MemberRef; roles: string[]; reason: string; created_at: string }[];
   inactive: { user: MemberRef; last_seen: string }[];
   relations: { user: MemberRef; attitude: number; ignore_until: string | null; ignore_reason: string }[];
@@ -81,43 +81,79 @@ function useMind(guildId: string) {
   return useApi<MindData>(`/api/guilds/${guildId}/mind`, [guildId]);
 }
 
+interface Fact { id: number; text: string; user: MemberRef | null; created_at: string }
+
 export function MemoryCard<C extends MindConfig>({ guildId, d, set }: { guildId: string; d: C; set: Setter<C> }) {
   const toast = useToast();
   const confirm = useConfirm();
   const mind = useMind(guildId);
   const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState("");
+  const [who, setWho] = useState<string>("all");
+  const [q, setQ] = useState("");
+  const [facts, setFacts] = useState<{ total: number; items: Fact[] } | null>(null);
+  const [peopleFilter, setPeopleFilter] = useState("");
+  const load = async (offset = 0) => {
+    try {
+      const r = await get<{ total: number; items: Fact[] }>(`/api/guilds/${guildId}/mind/memories?who=${who}&q=${encodeURIComponent(q)}&offset=${offset}&limit=100`);
+      setFacts((prev) => (offset && prev ? { total: r.total, items: [...prev.items, ...r.items] } : r));
+    } catch (e) { toast("err", errorText(e)); }
+  };
+  useEffect(() => {
+    const t = setTimeout(() => { void load(0); }, 250);
+    return () => clearTimeout(t);
+  }, [guildId, who, q]); // eslint-disable-line react-hooks/exhaustive-deps
   const learn = async () => {
     setBusy(true);
-    try { const r = await post<{ added: number }>(`/api/guilds/${guildId}/mind/learn`); toast("ok", r.added ? `Запомнил новых фактов: ${r.added}` : "Ничего нового не запомнил"); mind.reload(); }
+    try { const r = await post<{ added: number }>(`/api/guilds/${guildId}/mind/learn`); toast("ok", r.added ? `Запомнил новых фактов: ${r.added}` : "Ничего нового не запомнил"); mind.reload(); void load(0); }
     catch (e) { toast("err", errorText(e)); }
     finally { setBusy(false); }
   };
   const forget = async (id?: number) => {
-    if (id === undefined && !(await confirm({ title: "Стереть всю память?", text: "Бот забудет всё, что узнал о сервере и людях.", danger: true, confirmText: "Стереть" }))) return;
-    try { await del(`/api/guilds/${guildId}/mind/memories${id === undefined ? "" : `/${id}`}`); mind.reload(); }
-    catch (e) { toast("err", errorText(e)); }
+    const person = who !== "all" && who !== "general";
+    if (id === undefined && !(await confirm({ title: person ? "Стереть всё об этом человеке?" : "Стереть всю память?",
+      text: person ? "Бот забудет всё, что узнал о нём." : "Бот забудет всё, что узнал о сервере и людях.", danger: true, confirmText: "Стереть" }))) return;
+    try {
+      await del(id === undefined ? `/api/guilds/${guildId}/mind/memories?who=${person ? who : "all"}` : `/api/guilds/${guildId}/mind/memories/${id}`);
+      mind.reload(); void load(0);
+    } catch (e) { toast("err", errorText(e)); }
   };
-  const rows = (mind.data?.memories ?? []).filter((m) => !filter || m.text.toLowerCase().includes(filter.toLowerCase()));
+  const mem = mind.data?.memory;
+  const people = (mem?.people ?? []).filter((p) => !peopleFilter || p.user.name.toLowerCase().includes(peopleFilter.toLowerCase()));
   return (
-    <Card title={`Память и саморазвитие (${mind.data?.memories.length ?? 0})`} subtitle="Бот сам перечитывает чат и голосовые разговоры и запоминает факты: кто чем живёт, внутренние шутки, кто как к нему относится. Потом использует это в разговоре — и со временем «узнаёт» сервер.">
+    <Card title={`Память и саморазвитие (${(mem?.total ?? 0).toLocaleString("ru-RU")} фактов)`} subtitle="Бот сам перечитывает чат и голосовые разговоры и запоминает факты — отдельно о каждом человеке и о сервере в целом. В разговоре он вспоминает факты о собеседнике и о тех, кого обсуждают, и подходящие к теме.">
       <ToggleRow title="Запоминать" checked={d.memory_enabled} onChange={(v) => set("memory_enabled", v)} />
       <div className="row mt" style={{ alignItems: "flex-end" }}>
-        <Field label="Помнить фактов, максимум" hint="Старые вытесняются новыми"><NumberInput value={d.memory_max} min={10} max={2000} onChange={(v) => set("memory_max", v)} /></Field>
+        <Field label="Помнить фактов, максимум" hint="Старые вытесняются новыми. До 1 000 000"><NumberInput value={d.memory_max} min={10} max={1000000} onChange={(v) => set("memory_max", v)} /></Field>
         <button className="btn" disabled={busy} onClick={learn}><Icon name="zap" size={15} />{busy ? "Думаю…" : "Обдумать сейчас"}</button>
-        <span className="spacer" />
-        {!!mind.data?.memories.length && <button className="btn btn-sm btn-danger" onClick={() => forget()}>Стереть всё</button>}
       </div>
-      {!!mind.data?.memories.length && <input className="input mt" placeholder="Поиск по памяти…" value={filter} onChange={(e) => setFilter(e.target.value)} />}
-      <div className="stack mt" style={{ gap: 4, maxHeight: 360, overflow: "auto" }}>
-        {rows.map((m) => (
+
+      <h3 className="mt">О ком помнит</h3>
+      {(mem?.people.length ?? 0) > 12 && <input className="input mt" placeholder="Найти человека…" value={peopleFilter} onChange={(e) => setPeopleFilter(e.target.value)} />}
+      <div className="chips mt" style={{ maxHeight: 180, overflow: "auto" }}>
+        <button type="button" className={`chip${who === "all" ? " chip-active" : ""}`} onClick={() => setWho("all")}>Все · {(mem?.total ?? 0).toLocaleString("ru-RU")}</button>
+        <button type="button" className={`chip${who === "general" ? " chip-active" : ""}`} onClick={() => setWho("general")}>О сервере · {(mem?.general ?? 0).toLocaleString("ru-RU")}</button>
+        {people.map((p) => (
+          <button key={p.user.id} type="button" className={`chip${who === p.user.id ? " chip-active" : ""}`} onClick={() => setWho(p.user.id)}>
+            {p.user.name} · {p.count.toLocaleString("ru-RU")}</button>
+        ))}
+      </div>
+
+      <div className="row mt">
+        <input className="input" style={{ flex: 1 }} placeholder="Поиск по фактам…" value={q} onChange={(e) => setQ(e.target.value)} />
+        {!!facts?.total && <button className="btn btn-sm btn-danger" onClick={() => forget()}>{who !== "all" && who !== "general" ? "Забыть всё о нём" : "Стереть всё"}</button>}
+      </div>
+      <div className="small muted mt">Найдено: {(facts?.total ?? 0).toLocaleString("ru-RU")}</div>
+      <div className="stack mt" style={{ gap: 4, maxHeight: 420, overflow: "auto" }}>
+        {facts?.items.map((m) => (
           <div key={m.id} className="row small" style={{ gap: 8 }}>
             <span className="muted" style={{ minWidth: 86 }}>{fmtDate(m.created_at, false)}</span>
+            {who === "all" && <span className="badge" style={{ minWidth: 0 }}>{m.user?.name ?? "сервер"}</span>}
             <span style={{ flex: 1 }}>{m.text}</span>
             <button className="btn btn-sm btn-ghost" onClick={() => forget(m.id)} aria-label="Забыть"><Icon name="trash" size={13} /></button>
           </div>
         ))}
-        {mind.data && !mind.data.memories.length && <div className="small muted">Пока ничего не помнит. Факты появляются примерно каждые 25 сообщений в чате.</div>}
+        {facts && facts.items.length < facts.total && <button className="btn btn-sm" onClick={() => load(facts.items.length)}>Показать ещё</button>}
+        {facts && !facts.total && <div className="small muted">{q ? "Ничего не найдено." : "Пока ничего не помнит. Факты появляются примерно каждые 25 сообщений в чате."}</div>}
       </div>
     </Card>
   );

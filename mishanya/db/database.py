@@ -46,6 +46,23 @@ def _m6_relations(conn: Connection) -> None:
     Base.metadata.create_all(conn, tables=[BotRelation.__table__])
 
 
+def _m7_memory_index(conn: Connection) -> None:
+    """Память на сотни тысяч фактов: хеш текста для проверки повторов и индексы по людям."""
+    import hashlib
+
+    from ..services.mind import normalize
+
+    cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(bot_memory)")}
+    if "norm" not in cols:
+        conn.exec_driver_sql("ALTER TABLE bot_memory ADD COLUMN norm VARCHAR(40) NOT NULL DEFAULT ''")
+    rows = conn.exec_driver_sql("SELECT id, text FROM bot_memory WHERE norm = ''").fetchall()
+    for mid, text in rows:
+        conn.exec_driver_sql("UPDATE bot_memory SET norm = ? WHERE id = ?",
+                             (hashlib.sha1(normalize(text).encode()).hexdigest(), mid))
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_bot_memory_guild_norm ON bot_memory (guild_id, norm)")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_bot_memory_guild_user_id ON bot_memory (guild_id, user_id, id)")
+
+
 MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _m1_initial),
     (2, _m2_tickets_menus),
@@ -53,6 +70,7 @@ MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (4, _m4_posts),
     (5, _m5_mind),
     (6, _m6_relations),
+    (7, _m7_memory_index),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

@@ -609,11 +609,11 @@ async def mind_overview(request: Request, guild_id: int = Depends(guild_id_dep))
     app = get_app(request)
     dg = discord_guild(app, guild_id)
     cfg = await app.config.get_typed(guild_id, "chatter", ChatterConfig)
-    memories = await app.mind.memories(guild_id, limit=2000)
+    total, general, people = await app.mind.people(guild_id)
     grudges = await app.mind.grudges(guild_id)
     return {
-        "memories": [{"id": m.id, "text": m.text, "user": _member_info(dg, m.user_id), "created_at": iso(m.created_at)}
-                     for m in memories],
+        "memory": {"total": total, "general": general,
+                   "people": [{"user": _member_info(dg, uid), "count": n} for uid, n in people]},
         "grudges": [{"user": _member_info(dg, g.user_id), "roles": g.role_ids, "reason": g.reason,
                      "created_at": iso(g.created_at)} for g in grudges],
         "inactive": [{"user": _member_info(dg, r.user_id), "last_seen": iso(r.last_seen)}
@@ -653,9 +653,25 @@ async def mind_forget(request: Request, memory_id: int, guild_id: int = Depends(
     return {"ok": True}
 
 
+@router.get("/mind/memories")
+async def mind_memories(request: Request, guild_id: int = Depends(guild_id_dep),
+                        who: str = Query("all", pattern=r"^(all|general|\d{1,22})$"),
+                        q: str = Query("", max_length=100), offset: int = Query(0, ge=0),
+                        limit: int = Query(100, ge=1, le=500)) -> dict:
+    """Факты одного человека (who=ID), только о сервере (general) или все; с поиском и постранично."""
+    app = get_app(request)
+    dg = discord_guild(app, guild_id)
+    total, rows = await app.mind.search(guild_id, user_id=int(who) if who.isdigit() else None,
+                                        general=who == "general", query=q, offset=offset, limit=limit)
+    return {"total": total, "items": [{"id": m.id, "text": m.text, "user": _member_info(dg, m.user_id),
+                                       "created_at": iso(m.created_at)} for m in rows]}
+
+
 @router.delete("/mind/memories")
-async def mind_forget_all(request: Request, guild_id: int = Depends(guild_id_dep)) -> dict:
-    return {"removed": await get_app(request).mind.forget(guild_id)}
+async def mind_forget_all(request: Request, guild_id: int = Depends(guild_id_dep),
+                          who: str = Query("all", pattern=r"^(all|\d{1,22})$")) -> dict:
+    """Стереть всю память или всё, что бот помнит об одном человеке."""
+    return {"removed": await get_app(request).mind.forget(guild_id, user_id=int(who) if who.isdigit() else None)}
 
 
 @router.post("/mind/learn")

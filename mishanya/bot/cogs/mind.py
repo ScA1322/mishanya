@@ -266,6 +266,20 @@ class Mind(commands.Cog):
             if grudge is not None and self._cooldown(("apology", message.author.id), 15):
                 await self.handle_apology(message, cfg, grudge.reason)
 
+    @staticmethod
+    def _people_in(guild: discord.Guild, history: str, author: discord.Member | None) -> list[int]:
+        """Кто ещё участвует в разговоре или упомянут в нём — чтобы вспомнить и о них."""
+        tail = "\n".join(history.splitlines()[-8:]).lower()
+        ids = []
+        for m in getattr(guild, "members", []):
+            if m.bot or (author is not None and m.id == author.id) or len(m.display_name) < 3:
+                continue
+            if m.display_name.lower() in tail or (len(m.name) >= 4 and m.name.lower() in tail):
+                ids.append(m.id)
+                if len(ids) >= 4:
+                    break
+        return ids
+
     def is_apology_channel(self, cfg: ChatterConfig, channel_id: int) -> bool:
         return bool(cfg.apology_channel_id) and str(channel_id) == cfg.apology_channel_id
 
@@ -356,8 +370,9 @@ class Mind(commands.Cog):
                     extra_context: str = "") -> tuple[str, list[str]]:
         """Ответ модели + выполнение действий. Возвращает (реплика, заметки о сделанном)."""
         me = guild.me.display_name
-        ids = [author.id] if author else []
-        memory = await self.app.mind.recall(guild.id, ids) if cfg.memory_enabled else None
+        ids = ([author.id] if author else []) + self._people_in(guild, history, author)
+        memory = await self.app.mind.recall(guild.id, ids, query="\n".join(history.splitlines()[-3:])) \
+            if cfg.memory_enabled else None
         context = self._server_context(guild, author) + (f"\n{extra_context}" if extra_context else "")
         family = self.family_context(author, cfg, guild)
         if family:
@@ -923,23 +938,32 @@ class Mind(commands.Cog):
         items = [h for h in self.heard.get(guild.id, ()) if h.kind != "event"][-80:]
         if not items:
             return 0
-        known = await self.app.mind.recall(guild.id, [], general=40)
+        speakers = list(dict.fromkeys(h.user_id for h in items if h.user_id))[:6]
+        known = await self.app.mind.recall(guild.id, speakers, per_user=8, general=20,
+                                           query=" ".join(h.text for h in items[-10:]))
         history = "\n".join(f"{h.name}: {h.text}" for h in items)
-        task = ("Это свежие сообщения сервера. Ты сам развиваешься: выпиши до 5 НОВЫХ фактов, которые стоит запомнить "
+        task = ("Это свежие сообщения сервера. Ты сам развиваешься: выпиши до 10 НОВЫХ фактов, которые стоит запомнить "
                 "надолго, — кто чем увлекается, во что играет, внутренние шутки и мемы, события, кто с кем дружит или "
                 "срётся, как люди относятся к тебе, твои прозвища для людей, твоё мнение о них. Не повторяй то, что уже "
-                "помнишь, не записывай мусор. В каждом факте называй человека по имени. Пиши коротко и в своём стиле. "
+                "помнишь, не записывай мусор. Каждый факт — про одного человека (about — его имя, как в переписке) или про "
+                "сервер в целом (about: null). В тексте факта тоже называй человека по имени. Пиши коротко и в своём стиле. "
                 'Ответь СТРОГО JSON без текста вокруг: {"facts": [{"about": "имя участника или null", "text": "факт"}]}')
         raw = await self._llm(cfg, history=history, channel="весь сервер", task=task, raw=True, memory=known,
-                              bot_name=guild.me.display_name, temperature=0.6, max_tokens=500)
+                              bot_name=guild.me.display_name, temperature=0.6, max_tokens=900)
         data = parse_json(raw) or {}
         names = {normalize(h.name): h.user_id for h in items if h.user_id}
         facts = []
-        for f in (data.get("facts") or [])[:5]:
+        humans = [m for m in getattr(guild, "members", []) if not m.bot]
+        for f in (data.get("facts") or [])[:10]:
             if not isinstance(f, dict) or not str(f.get("text") or "").strip():
                 continue
-            about = normalize(str(f.get("about") or ""))
-            facts.append((names.get(about), str(f["text"])))
+            about_raw = str(f.get("about") or "").strip()
+            about = normalize(about_raw)
+            uid = names.get(about)
+            if uid is None and about and about not in ("null", "none", "сервер"):
+                m = best_match(about_raw, humans, lambda x: (x.display_name, x.name, x.global_name or ""))
+                uid = m.id if m else None  # type: ignore[union-attr]
+            facts.append((uid, str(f["text"])))
         added = await self.app.mind.remember(guild.id, facts, cfg.memory_max)
         if added:
             log.info("Память: запомнил %d новых фактов на сервере %s", added, guild.name)

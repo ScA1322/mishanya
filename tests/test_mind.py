@@ -201,8 +201,10 @@ async def test_mind_api(authed, app):
     await app.mind.remember(GID, [(None, "сервер любит пельмени")], 100)
     await app.mind.add_grudge(GID, 5, [], "назвал тупым")
     data = (await authed.get(f"/api/guilds/{GID}/mind")).json()
-    assert data["memories"][0]["text"] == "сервер любит пельмени" and data["grudges"][0]["reason"] == "назвал тупым"
-    mid = data["memories"][0]["id"]
+    assert data["memory"] == {"total": 1, "general": 1, "people": []} and data["grudges"][0]["reason"] == "назвал тупым"
+    page = (await authed.get(f"/api/guilds/{GID}/mind/memories?who=general&q=пельм")).json()
+    assert page["total"] == 1 and page["items"][0]["text"] == "сервер любит пельмени"
+    mid = page["items"][0]["id"]
     assert (await authed.delete(f"/api/guilds/{GID}/mind/memories/{mid}")).status_code == 200
     assert (await authed.post(f"/api/guilds/{GID}/mind/forgive/5")).json() == {"restored": 0}
     assert (await authed.get(f"/api/guilds/{GID}/mind")).json()["grudges"] == []
@@ -500,3 +502,47 @@ async def test_relay_dm(app, monkeypatch):
     assert notes == ["📨 Передал **Вася** в личку."] and "от **XNAX** (@xnax)" in got[0] and got[0].endswith("> 1")
     notes = await cog.do_actions(asker, [{"type": "dm", "who": "Вася", "text": "ещё"}], cfg, None)
     assert "не больше 1" in notes[0] and len(got) == 1
+
+
+async def test_memory_scale_and_people(app):
+    """200 000+ фактов: повторы ловятся по хешу, нужные факты о человеке находятся быстро, панель видит людей."""
+    import time as _t
+
+    from sqlalchemy import text
+
+    from mishanya.services.mind import MindService
+
+    await app.guilds.ensure(GID, "g")
+    rows = [{"g": GID, "u": (i % 500) + 1, "t": f"участник {i % 500} любит штуку номер {i}",
+             "n": MindService._norm_hash(f"участник {i % 500} любит штуку номер {i}")} for i in range(210_000)]
+    async with app.db.session() as s:
+        await s.execute(text("INSERT INTO bot_memory (guild_id, user_id, text, norm, created_at) "
+                             "VALUES (:g, :u, :t, :n, CURRENT_TIMESTAMP)"), rows)
+        await s.commit()
+    t0 = _t.perf_counter()
+    assert await app.mind.remember(GID, [(7, "участник 6 любит штуку номер 6"), (7, "Вася фанат пельменей")],
+                                   limit=1_000_000) == 1  # первый — повтор
+    facts = await app.mind.recall(GID, [7], query="а ты помнишь про пельмени?")
+    assert "Вася фанат пельменей" in facts and _t.perf_counter() - t0 < 3
+    total, general, people = await app.mind.people(GID)
+    assert total == 210_001 and general == 0 and people[0][1] >= 420
+    n, items = await app.mind.search(GID, user_id=7, query="пельмен")
+    assert n == 1 and items[0].text == "Вася фанат пельменей"
+    await app.mind.remember(GID, [(None, "сервер стал другим")], limit=200_000)  # обрезка до лимита
+    assert (await app.mind.people(GID))[0] == 200_000
+
+
+def test_memory_migration_adds_hash(tmp_path):
+    from sqlalchemy import create_engine
+
+    from mishanya.db.database import _m7_memory_index
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with eng.begin() as conn:
+        conn.exec_driver_sql("CREATE TABLE bot_memory (id INTEGER PRIMARY KEY, guild_id BIGINT, user_id BIGINT, "
+                             "text VARCHAR(300), created_at DATETIME)")
+        conn.exec_driver_sql("INSERT INTO bot_memory (guild_id, user_id, text) VALUES (1, 2, 'Вася любит доту')")
+        _m7_memory_index(conn)
+        _m7_memory_index(conn)  # повторный запуск ничего не ломает
+        norm = conn.exec_driver_sql("SELECT norm FROM bot_memory").scalar()
+    assert len(norm) == 40
