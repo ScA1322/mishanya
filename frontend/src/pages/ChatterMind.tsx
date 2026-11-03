@@ -13,6 +13,7 @@ export interface MindConfig {
   move_enabled: boolean; move_others_requires_permission: boolean;
   control_music: boolean; control_moderation: boolean; control_roles: boolean;
   control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean;
+  relay_dm: boolean; relay_per_hour: number; relay_anonymous: boolean;
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
   join_requests: boolean; join_min_messages: number; join_retry_hours: number;
   pc_control: boolean; pc_start_menu: boolean; pc_programs: { name: string; target: string }[];
@@ -173,6 +174,13 @@ export function MoveCard<C extends MindConfig>({ d, set }: { d: C; set: Setter<C
         checked={d.move_others_requires_permission} onChange={(v) => set("move_others_requires_permission", v)} />}
       <ToggleRow title="Модерация" hint="Мут в чате и снятие мута, смена ника, удаление последних сообщений (до 50)" checked={d.control_moderation} onChange={(v) => set("control_moderation", v)} />
       <ToggleRow title="Роли" hint="Выдать или забрать роль ниже роли бота (кроме ролей с админскими правами)" checked={d.control_roles} onChange={(v) => set("control_roles", v)} />
+      <ToggleRow title="Передавать сообщения в личку" hint="«Император, напиши Васе в лс, что он лох» — бот передаст от своего имени. Просить может кто угодно, бот может отказать" checked={d.relay_dm} onChange={(v) => set("relay_dm", v)} />
+      {d.relay_dm && (
+        <div className="grid grid-2">
+          <Field label="Передач в час от одного человека" hint="Чтобы бота не превратили в спамера"><NumberInput value={d.relay_per_hour} min={1} max={100} onChange={(v) => set("relay_per_hour", v)} /></Field>
+          <ToggleRow title="Анонимно" hint="Не писать получателю, кто просил передать" checked={d.relay_anonymous} onChange={(v) => set("relay_anonymous", v)} />
+        </div>
+      )}
       <ToggleRow title="Кик и бан" hint="Выгнать или забанить по своему решению. О каждом кике и бане доверенным уходит доклад с причиной" checked={d.control_kick_ban} onChange={(v) => set("control_kick_ban", v)} />
       {d.control_kick_ban && <Field label="Киков и банов в час, не больше" hint="Защита на случай, если модель «сойдёт с ума»"><NumberInput value={d.kick_ban_per_hour} min={1} max={30} onChange={(v) => set("kick_ban_per_hour", v)} /></Field>}
       <div className="small muted">Боту нужны права: «Управлять ролями», «Управлять никнеймами», «Отправлять участников подумать», «Управлять сообщениями», «Перемещать участников», «Отключать участникам микрофон», «Выгонять участников», «Банить участников».</div>

@@ -562,6 +562,10 @@ class Mind(commands.Cog):
                     note = await self._member_action(requester, kind, a, cfg)
                     if note:
                         notes.append(note)
+                elif kind == "dm":
+                    note = await self._relay_dm(requester, a, cfg)
+                    if note:
+                        notes.append(note)
                 elif kind in ("pc_open", "pc_close"):
                     note = await self._pc_action(requester, kind, a, cfg)
                     if note:
@@ -695,6 +699,31 @@ class Mind(commands.Cog):
             text = f"🔨 Забанил **{who.display_name}**. За: {why}."
         await self.notify(guild, cfg, f"{text} («{guild.name}», @{who.name}, попросил {requester.display_name})")
         return text
+
+    async def _relay_dm(self, requester: discord.Member, a: dict, cfg: ChatterConfig) -> str | None:
+        """Передаёт сообщение в личку участнику сервера по чьей-то просьбе."""
+        if not cfg.relay_dm:
+            return None
+        text = str(a.get("text") or "").strip()
+        if not text:
+            return None
+        guild = requester.guild
+        who = self._find_member(guild, requester, str(a.get("who") or ""))
+        if who is None:
+            return f"⚠️ Не понял, кому писать: «{a.get('who')}»."
+        if who.bot:
+            return "⚠️ Ботам не пишу."
+        if not self._take_quota(("relay", guild.id, requester.id), cfg.relay_per_hour):
+            return f"⚠️ Хватит: не больше {cfg.relay_per_hour} передач в час от одного человека."
+        head = f"📨 Тебе передают с сервера «{guild.name}»" + ("" if cfg.relay_anonymous else
+                                                           f" от **{requester.display_name}** (@{requester.name})")
+        body = "\n".join(f"> {line}" for line in text[:1800].splitlines() or [text[:1800]])
+        try:
+            await who.send(f"{head}:\n{body}", allowed_mentions=discord.AllowedMentions.none())
+        except discord.Forbidden:
+            return f"⚠️ {who.display_name} закрыл личку — не дошло."
+        log.info("Передал в личку %s по просьбе %s: %s", who, requester, text[:200])
+        return f"📨 Передал **{who.display_name}** в личку."
 
     async def _pc_action(self, requester: discord.Member, kind: str, a: dict, cfg: ChatterConfig) -> str | None:
         if not cfg.pc_control:

@@ -483,6 +483,10 @@ class ChatterConfig(Strict):
     join_requests: bool = True
     join_min_messages: int = Field(8, ge=1, le=200)  # сколько он должен написать боту, прежде чем просьбу рассмотрят
     join_retry_hours: int = Field(6, ge=0, le=720)
+    # Передать сообщение в личку кому-то с сервера по просьбе любого человека
+    relay_dm: bool = True
+    relay_per_hour: int = Field(5, ge=1, le=100)  # от одного человека в час — чтобы бота не превратили в спамера
+    relay_anonymous: bool = False  # True — не писать получателю, от кого сообщение
     # Компьютер владельца: открыть или закрыть программу по просьбе доверенного (или владельца)
     pc_control: bool = True
     pc_start_menu: bool = True  # всё, что есть в меню «Пуск»

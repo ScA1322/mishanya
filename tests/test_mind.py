@@ -481,3 +481,22 @@ async def test_pc_only_for_trusted(app, monkeypatch):
     assert "Открыл" in await cog._pc_action(SimpleNamespace(id=42), "pc_open", {"program": "steam"}, cfg)  # владелец
     cfg.pc_control = False
     assert await cog._pc_action(SimpleNamespace(id=42), "pc_open", {"program": "steam"}, cfg) is None
+
+
+async def test_relay_dm(app, monkeypatch):
+    """«Передай Васе в лс …» — бот пишет от себя с подписью, кто просил; есть лимит в час."""
+    cog, _, _ = _cog(app, monkeypatch, [])
+    got = []
+
+    async def send(text, **kw):  # noqa: ANN001, ANN003
+        got.append(text)
+
+    guild = SimpleNamespace(id=GID, name="Лечебница", members=[])
+    vasya = FakeMember(id=6, name="vasya", display_name="Вася", global_name=None, bot=False, send=send)
+    asker = FakeMember(id=5, name="xnax", display_name="XNAX", global_name=None, bot=False, guild=guild)
+    guild.members = [vasya, asker]
+    cfg = ChatterConfig(enabled=True, relay_per_hour=1)
+    notes = await cog.do_actions(asker, [{"type": "dm", "who": "Вася", "text": "1"}], cfg, None)
+    assert notes == ["📨 Передал **Вася** в личку."] and "от **XNAX** (@xnax)" in got[0] and got[0].endswith("> 1")
+    notes = await cog.do_actions(asker, [{"type": "dm", "who": "Вася", "text": "ещё"}], cfg, None)
+    assert "не больше 1" in notes[0] and len(got) == 1
