@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, func, select
 
 from ..db import Database
-from ..db.models import BotGrudge, BotMemory, BotRelation, VoiceSeen, utcnow
+from ..db.models import BotGrudge, BotMemory, BotRelation, DmContact, VoiceSeen, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -94,8 +94,10 @@ ACTIONS_FORMAT = (
     "offense — насколько последнее сообщение издевается над тобой или оскорбляет ТЕБЯ лично: 0 — нормально или "
     "обычный дружеский мат, 1 — подкол или стёб, 2 — настоящее оскорбление или унижение, 3 — жёсткая травля. "
     "Оскорбления других людей, мат в воздух и шутки не про тебя — это 0. offense_reason — если offense > 0, "
-    "коротко, за что обиделся (например «назвал тупым ботом»). mute_minutes — если offense > 0, сам реши, на "
-    "сколько минут замутить: за мелкий подкол пара минут, за оскорбление 10–30, за травлю часы.\n"
+    "коротко, за что обиделся (например «назвал тупым ботом»). mute_minutes — если offense > 0, сам реши срок "
+    "приговора в минутах: за мелкий подкол пара минут, за оскорбление 10–60, за травлю часы и сутки. Тебе НРАВИТСЯ "
+    "твоя власть: наказывая, ты наслаждаешься — в reply огласи приговор пафосно, с удовольствием, как император, "
+    "который вершит суд (без предупреждений «не делай так» — сразу суд).\n"
     "actions — что ты делаешь на сервере. У тебя есть настоящая власть, ты не просто болтаешь: если просят что-то "
     "сделать, сам решай — выполнить, отказать или сделать по-своему (ты Император). Можешь и сам, без просьбы, "
     "например вырубить надоевшую музыку или замутить надоеду. Если делаешь — обязательно добавь действие, иначе "
@@ -310,16 +312,39 @@ class MindService:
             return list((await s.execute(select(BotGrudge).where(BotGrudge.guild_id == guild_id)
                                          .order_by(BotGrudge.created_at.desc()))).scalars())
 
-    async def add_grudge(self, guild_id: int, user_id: int, role_ids: list[int], reason: str) -> None:
+    async def add_grudge(self, guild_id: int, user_id: int, role_ids: list[int], reason: str,
+                         until: datetime | None = None) -> None:
         async with self.db.session() as s:
             row = await s.get(BotGrudge, (guild_id, user_id))
             if row is None:
                 s.add(BotGrudge(guild_id=guild_id, user_id=user_id, role_ids=[str(r) for r in role_ids],
-                                reason=reason[:300]))
-            else:  # повторная обида: роли, снятые в прошлый раз, не теряем
+                                reason=reason[:300], until=until))
+            else:  # повторная обида: роли, снятые в прошлый раз, не теряем; срок продлевается
                 row.role_ids = sorted(set(row.role_ids) | {str(r) for r in role_ids})
                 row.reason = reason[:300]
+                row.until = max(row.until, until) if row.until and until else until
             await s.commit()
+
+    async def expired_grudges(self) -> list[BotGrudge]:
+        async with self.db.session() as s:
+            return list((await s.execute(select(BotGrudge).where(
+                BotGrudge.until.is_not(None), BotGrudge.until <= utcnow()))).scalars())
+
+    # кто писал в личку
+    async def note_dm(self, user_id: int, name: str, display: str, status: str, text: str) -> None:
+        async with self.db.session() as s:
+            row = await s.get(DmContact, user_id)
+            if row is None:
+                row = DmContact(user_id=user_id, count=0)
+                s.add(row)
+            row.name, row.display, row.status = name[:100], display[:100], status[:40]
+            row.count = (row.count or 0) + 1
+            row.last_text, row.last_at = " ".join(text.split())[:300], utcnow()
+            await s.commit()
+
+    async def dm_contacts(self, limit: int = 15) -> list[DmContact]:
+        async with self.db.session() as s:
+            return list((await s.execute(select(DmContact).order_by(DmContact.last_at.desc()).limit(limit))).scalars())
 
     async def drop_grudge(self, guild_id: int, user_id: int) -> BotGrudge | None:
         async with self.db.session() as s:

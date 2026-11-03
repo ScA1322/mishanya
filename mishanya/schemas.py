@@ -489,6 +489,9 @@ class ChatterConfig(Strict):
     punish_remove_roles: bool = True
     apology_channel_id: OptSnowflake = None
     punish_exempt_roles: list[Snowflake] = Field(default_factory=list, max_length=50)
+    # Роль «Приговорённый»: выдаётся на срок вместо мута Discord; права роли (писать только в канал извинений)
+    # настраиваются на сервере. По извинению или по сроку роль снимается, а прежние роли возвращаются.
+    punish_role_id: OptSnowflake = None
     # Перемещение по голосовым каналам по просьбе в чате или голосом
     move_enabled: bool = True  # голосовые каналы: перекинуть, выкинуть, выключить микрофон
     move_others_requires_permission: bool = False  # True — чужих двигает, только если просит тот, у кого есть право
@@ -523,7 +526,7 @@ class ChatterConfig(Strict):
     pc_start_menu: bool = True  # всё, что есть в меню «Пуск»
     pc_programs: list[PcProgram] = Field(default_factory=list, max_length=50)  # свои программы и игры  # после отказа доверенных можно просить снова через столько часов
     report_inactive_days: int = Field(7, ge=0, le=365)  # 0 — не докладывать
-    gossip_hours: int = Field(12, ge=0, le=168)  # 0 — не сплетничать
+    gossip_hours: int = Field(4, ge=0, le=168)  # 0 — не сплетничать
     # Голосовые триггеры (работают, пока бот слушает)
     voice_triggers: list[VoiceTrigger] = Field(
         default_factory=lambda: [VoiceTrigger(phrase="аллаху акбар", steam_app_id=376210, title="The Isle")],

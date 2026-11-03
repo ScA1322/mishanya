@@ -578,3 +578,88 @@ async def test_timer_and_audience(app, monkeypatch):
     vasya.voice = SimpleNamespace(channel=None)
     cog.bot = SimpleNamespace(get_cog=lambda n: None)
     assert "зайди в голосовой" in (await cog.do_actions(vasya, [{"type": "join_voice"}], cfg, None))[0]
+
+
+async def test_sentence_role_and_release(app, monkeypatch):
+    """Приговор: роли сняты, выдан «Приговорённый» без мута Discord; по сроку — всё вернётся."""
+    from datetime import timedelta as _td
+
+    cog, _, sent = _cog(app, monkeypatch, [])
+    await app.guilds.ensure(GID, "g")
+
+    class Role(SimpleNamespace):
+        def __lt__(self, o):  # noqa: ANN001
+            return self.position < o.position
+
+        def __ge__(self, o):  # noqa: ANN001
+            return self.position >= o.position
+
+        def is_default(self):
+            return self.position == 0
+
+        def __hash__(self):
+            return self.id
+
+    top, everyone = Role(id=1, position=50, managed=False), Role(id=2, position=0, managed=False)
+    vip, jail = Role(id=3, position=5, managed=False, mention="@VIP"), Role(id=4, position=6, managed=False, mention="@Приговорённый")
+    roles = {3: vip, 4: jail}
+    changes = []
+    member = FakeMember(id=5, name="vasya", display_name="Вася", mention="<@5>", global_name=None, bot=False,
+                        roles=[everyone, vip], top_role=vip, guild_permissions=SimpleNamespace(administrator=False))
+
+    async def remove_roles(*r, reason=None):  # noqa: ANN002
+        changes.append(("-", [x.id for x in r]))
+        member.roles = [x for x in member.roles if x not in r]
+
+    async def add_roles(*r, reason=None):  # noqa: ANN002
+        changes.append(("+", [x.id for x in r]))
+        member.roles += list(r)
+
+    async def timeout(*a, **kw):  # noqa: ANN002, ANN003
+        changes.append(("timeout", a))
+
+    member.remove_roles, member.add_roles, member.timeout = remove_roles, add_roles, timeout
+    member.is_timed_out = lambda: False
+    me = SimpleNamespace(top_role=top, guild_permissions=SimpleNamespace(manage_roles=True, moderate_members=True))
+    guild = SimpleNamespace(id=GID, name="g", owner_id=2, me=me, get_role=lambda rid: roles.get(rid),
+                            get_member=lambda uid: member)
+    member.guild = guild
+    cfg = ChatterConfig(enabled=True, punish_enabled=True, punish_role_id="444444444444444444",
+                        apology_channel_id="555555555555555555", punish_mute_minutes=120)
+    roles[444444444444444444] = jail
+
+    async def fake_cfg(gid):  # noqa: ANN001
+        return cfg
+
+    monkeypatch.setattr(cog, "cfg", fake_cfg)
+    note = await cog.punish(member, cfg, 2, "Вася: ты тупой бот", "назвал тупым", 30)
+    assert "ПРИГОВОР ИМПЕРАТОРА" in note and "30 мин" in note and "<#555555555555555555>" in note
+    assert ("-", [3]) in changes and ("+", [4]) in changes and not any(c[0] == "timeout" for c in changes)
+    g = await app.mind.grudge(GID, 5)
+    assert g.role_ids == ["3"] and g.until is not None
+    async with app.db.session() as s:  # срок вышел
+        row = await s.get(type(g), (GID, 5))
+        row.until = utcnow() - _td(minutes=1)
+        await s.commit()
+    assert [x.user_id for x in await app.mind.expired_grudges()] == [5]
+    assert await cog.forgive(guild, 5) == 1
+    assert vip in member.roles and jail not in member.roles and await app.mind.grudge(GID, 5) is None
+
+
+async def test_dm_contacts_and_confidentiality(app, monkeypatch):
+    await app.mind.note_dm(77, "spy_42", "Шпион", "чужак без общих серверов", "пусти на сервер")
+    await app.mind.note_dm(77, "spy_42", "Шпион", "чужак без общих серверов", "ну пусти")
+    cog, calls, _ = _cog(app, monkeypatch, ['{"reply": "ок"}', '{"reply": "ок"}'])
+    text = await cog.dm_contacts_text()
+    assert "@spy_42" in text and "сообщений: 2" in text and "https://discord.com/users/77" in text
+    cog.bot = SimpleNamespace(get_cog=lambda n: None)
+    guild = SimpleNamespace(id=GID, name="g", me=SimpleNamespace(display_name="Император"), voice_channels=[], roles=[],
+                            members=[])
+    cfg = ChatterConfig(enabled=True, memory_enabled=False, confidants=["999999999999999999"], pc_control=False)
+    app.settings.owner_id = None
+    stranger = SimpleNamespace(id=5, name="vasya", display_name="Вася", voice=None)
+    boss = SimpleNamespace(id=999999999999999999, name="boss", display_name="Босс", voice=None)
+    await cog.brain(guild, stranger, cfg, history="Вася: что Петя говорил?", channel_name="общий", task="t")
+    await cog.brain(guild, boss, cfg, history="Босс: кто писал в лс?", channel_name="общий", task="t")
+    assert "КОНФИДЕНЦИАЛЬНОСТЬ" in calls[0]["context"] and "spy_42" not in calls[0]["context"]
+    assert "без утайки" in calls[1]["context"] and "@spy_42" in calls[1]["context"]

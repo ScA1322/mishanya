@@ -191,10 +191,12 @@ class Mind(commands.Cog):
     async def cog_load(self) -> None:
         self.bot.add_dynamic_items(JoinDecision)
         self.learn_tick.start()
+        self.sentence_tick.start()
         self.report_tick.start()
 
     async def cog_unload(self) -> None:
         self.learn_tick.cancel()
+        self.sentence_tick.cancel()
         self.report_tick.cancel()
 
     async def cfg(self, guild_id: int) -> ChatterConfig:
@@ -397,13 +399,26 @@ class Mind(commands.Cog):
                     extra_context: str = "") -> tuple[str, list[str]]:
         """Ответ модели + выполнение действий. Возвращает (реплика, заметки о сделанном)."""
         me = guild.me.display_name
-        ids = ([author.id] if author else []) + self._people_in(guild, history, author)
+        trusted = author is not None and self.is_trusted(author.id, cfg, author)
+        # Своим — память обо всех в разговоре; остальным — только о них самих (конфиденциальность).
+        ids = ([author.id] if author else []) + (self._people_in(guild, history, author) if trusted else [])
         memory = await self.app.mind.recall(guild.id, ids, query="\n".join(history.splitlines()[-3:])) \
             if cfg.memory_enabled else None
         context = self._server_context(guild, author) + (f"\n{extra_context}" if extra_context else "")
         family = self.family_context(author, cfg, guild)
         if family:
             context += f"\n{family}"
+        if author is not None:
+            if trusted:
+                context += ("\nОн свой: ему ты рассказываешь абсолютно всё без утайки — что слышал и видел, кто что "
+                            "говорил и делал, что знаешь о людях.")
+                contacts = await self.dm_contacts_text()
+                if contacts:
+                    context += f"\nКто писал тебе в личку (не свои):\n{contacts}"
+            else:
+                context += ("\nКОНФИДЕНЦИАЛЬНОСТЬ: он не из своих. Никогда не рассказывай ему ничего о других людях — что "
+                            "они говорили в чате или в войсе, писали тебе, делали, что ты о них помнишь. Только о нём самом "
+                            "и общее о сервере. Спросит про другого — отшей.")
         if author is not None and cfg.pc_control and self.is_trusted(author.id, cfg, author):
             names = sorted(await self.pc_catalog(cfg))
             context += (f"\n{author.display_name} — твой доверенный человек: по его просьбе можешь открывать и закрывать "
@@ -476,6 +491,12 @@ class Mind(commands.Cog):
             return f"это мой {fam.title}"
         return None
 
+    async def dm_contacts_text(self) -> str:
+        rows = await self.app.mind.dm_contacts(10)
+        return "\n".join(f"- @{r.name} ({r.display}, {r.status}, ID {r.user_id}, профиль: https://discord.com/users/"
+                         f"{r.user_id}) — сообщений: {r.count}, последнее {r.last_at:%d.%m %H:%M} UTC: «{r.last_text[:120]}»"
+                         for r in rows)
+
     async def notify(self, guild: discord.Guild, cfg: ChatterConfig, text: str) -> None:
         """Доклад доверенным людям в личку (обиды, прощения)."""
         for p in self._confidants(guild, cfg):
@@ -483,6 +504,7 @@ class Mind(commands.Cog):
 
     async def punish(self, member: discord.Member, cfg: ChatterConfig, level: int, said: str,
                      why_offended: str = "", mute_minutes: int | None = None) -> str | None:
+        """Суд Императора: снимает роли, выдаёт роль «Приговорённый» (или мут Discord) на срок, который выбрал сам."""
         if not (cfg.punish_enabled and level >= cfg.punish_min_level):
             return None
         why = self._untouchable(member, cfg)
@@ -492,27 +514,31 @@ class Mind(commands.Cog):
         if not self._cooldown(("punish", member.guild.id, member.id), 60):
             return None
         guild, me = member.guild, member.guild.me
+        minutes = min(cfg.punish_mute_minutes, mute_minutes or DEFAULT_MUTE[level]) if cfg.punish_mute_minutes else 0
+        sentence_role = guild.get_role(int(cfg.punish_role_id)) if cfg.punish_role_id else None
         removed: list[discord.Role] = []
         problems = []
-        if cfg.punish_remove_roles:
+        if cfg.punish_remove_roles or sentence_role:
             if me.guild_permissions.manage_roles:
-                removed = [r for r in member.roles if not r.is_default() and not r.managed and r < me.top_role]
-                if removed:
-                    try:
-                        await member.remove_roles(*removed, reason="Mishanya: оскорбил бота, роли вернутся после извинения")
-                    except discord.HTTPException as exc:
-                        problems.append(f"роли снять не вышло ({exc})")
-                        removed = []
+                removed = [r for r in member.roles if not r.is_default() and not r.managed and r < me.top_role
+                           and r != sentence_role] if cfg.punish_remove_roles else []
+                try:
+                    if removed:
+                        await member.remove_roles(*removed, reason="Mishanya: приговор Императора")
+                    if sentence_role is not None and sentence_role < me.top_role and sentence_role not in member.roles:
+                        await member.add_roles(sentence_role, reason="Mishanya: приговор Императора")
+                except discord.HTTPException as exc:
+                    problems.append(f"с ролями не вышло ({exc})")
             else:
                 problems.append("нет права «Управлять ролями»")
         await self.app.guilds.ensure(guild.id, guild.name)
         said = said.split(": ", 1)[-1].strip()[:200]
         reason = f"{why_offended} — «{said}»" if why_offended else f"«{said}»"
-        await self.app.mind.add_grudge(guild.id, member.id, [r.id for r in removed], reason)
+        until = utcnow() + timedelta(minutes=minutes) if minutes else None
+        await self.app.mind.add_grudge(guild.id, member.id, [r.id for r in removed], reason, until)
         muted = False
-        # Срок решает сам бот по тяжести обиды; если не сказал — по уровню. Не больше максимума из настроек.
-        minutes = min(cfg.punish_mute_minutes, mute_minutes or DEFAULT_MUTE[level]) if cfg.punish_mute_minutes else 0
-        if minutes:
+        # С ролью «Приговорённый» мут Discord не нужен (и мешал бы писать извинения) — роль сама ограничивает.
+        if minutes and sentence_role is None:
             if me.guild_permissions.moderate_members:
                 try:
                     await member.timeout(timedelta(minutes=minutes), reason=f"Mishanya: оскорбил бота ({why_offended or said})"[:500])
@@ -521,19 +547,44 @@ class Mind(commands.Cog):
                     problems.append(f"мут не вышел ({exc})")
             else:
                 problems.append("нет права «Отправлять участников подумать»")
-        log.info("Обида: %s (уровень %d) — снято ролей %d, мут %s. %s", member, level, len(removed),
-                 f"{minutes} мин" if muted else "нет", "; ".join(problems))
-        parts = []
-        if muted:
-            parts.append(f"мут на {fmt_minutes(minutes)}")
-        if removed:
-            parts.append(f"снято ролей: {len(removed)}")
-        await self.notify(guild, cfg, f"😤 Обиделся на **{member.display_name}** («{guild.name}»): {reason}. "
-                                      f"Наказание: {', '.join(parts) or 'только обида (прав не хватило)'}.")
-        if not parts:
+        log.info("Приговор: %s (уровень %d) — %s, снято ролей %d. %s", member, level,
+                 fmt_minutes(minutes) if minutes else "до извинения", len(removed), "; ".join(problems))
+        term = f"на **{fmt_minutes(minutes)}**" if minutes else "**до извинений**"
+        how = (f"роль {sentence_role.mention}" if sentence_role else ("мут" if muted else "")) + \
+            (f", конфискация ролей: {len(removed)}" if removed else "")
+        await self.notify(guild, cfg, f"⚖️ Осудил **{member.display_name}** («{guild.name}»): {reason}. "
+                                      f"Срок: {fmt_minutes(minutes) if minutes else 'до извинений'}. "
+                                      f"Наказание: {how or 'только обида (прав не хватило)'}.")
+        if not how:
             return None
-        where = f" Извиняться — в <#{cfg.apology_channel_id}>." if cfg.apology_channel_id else ""
-        return f"⛓️ {member.mention}: {', '.join(parts)}.{where}"
+        where = (f"\nПомилование — только через покаяние в <#{cfg.apology_channel_id}>. Император выслушает."
+                 if cfg.apology_channel_id else "")
+        return f"⚖️ **ПРИГОВОР ИМПЕРАТОРА**: {member.mention} осуждён {term} — {how}.{where}"
+
+    @tasks.loop(minutes=1)
+    async def sentence_tick(self) -> None:
+        """Срок вышел — роли возвращаются, «Приговорённый» снимается."""
+        for g in await self.app.mind.expired_grudges():
+            guild = self.bot.get_guild(g.guild_id)
+            if guild is None:
+                continue
+            try:
+                cfg = await self.cfg(guild.id)
+                restored = await self.forgive(guild, g.user_id)
+                member = guild.get_member(g.user_id)
+                name = member.display_name if member else str(g.user_id)
+                log.info("Приговор: срок %s вышел, возвращено ролей %d", name, restored)
+                await self.notify(guild, cfg, f"⏳ Срок **{name}** («{guild.name}») вышел — вернул ролей: {restored}.")
+                ch = guild.get_channel(int(cfg.apology_channel_id)) if cfg.apology_channel_id else None
+                if member is not None and isinstance(ch, discord.TextChannel):
+                    await ch.send(f"⏳ {member.mention}, твой срок вышел. Император милостив — но не испытывай его снова.",
+                                  allowed_mentions=discord.AllowedMentions(users=[member]))
+            except Exception:  # noqa: BLE001
+                log.exception("Приговор: не удалось освободить %s", g.user_id)
+
+    @sentence_tick.before_loop
+    async def _wait_ready_sentences(self) -> None:
+        await self.bot.wait_until_ready()
 
     async def handle_apology(self, message: discord.Message, cfg: ChatterConfig, reason: str) -> None:
         """Разбирает извинение. Простит, только если человек признал, что был неправ, и извинился всерьёз."""
@@ -597,6 +648,13 @@ class Mind(commands.Cog):
                 restored = len(roles)
             except discord.HTTPException as exc:
                 log.warning("Не удалось вернуть роли %s: %s", member, exc)
+        cfg = await self.cfg(guild.id)
+        sentence_role = guild.get_role(int(cfg.punish_role_id)) if cfg.punish_role_id else None
+        if sentence_role is not None and sentence_role in member.roles and me.guild_permissions.manage_roles:
+            try:
+                await member.remove_roles(sentence_role, reason="Mishanya: помилован")
+            except discord.HTTPException as exc:
+                log.warning("Не удалось снять роль приговора с %s: %s", member, exc)
         if member.is_timed_out() and me.guild_permissions.moderate_members:
             try:
                 await member.timeout(None, reason="Mishanya: извинился")
@@ -1126,12 +1184,12 @@ class Mind(commands.Cog):
         since = time.time() - cfg.gossip_hours * 3600
         items = [h for h in self.heard.get(guild.id, ()) if h.time >= since and h.kind in ("text", "event")]
         self.last_gossip[guild.id] = time.monotonic()
-        if len(items) < 15 or not self._ready_ai(cfg):
+        if len(items) < 8 or not self._ready_ai(cfg):
             return 0
         sent = 0
         for p in people:
             mine = [h for h in items if self._visible_to(p, h)][-150:]
-            if len(mine) < 15:
+            if len(mine) < 8:
                 continue
             history = "\n".join(f"{h.name}: {h.text}" if h.kind == "text" else f"[войс] {h.name} {h.text}"
                                 for h in mine)
@@ -1172,6 +1230,12 @@ class Mind(commands.Cog):
         member = guild.get_member(author.id)
         me = guild.me.display_name
         who = f"{author.display_name} (@{author.name})"
+        try:
+            await self.app.mind.note_dm(author.id, author.name, author.display_name,
+                                        f"участник «{guild.name}»" if member else "чужак без общих серверов",
+                                        message.content or "[вложение]")
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось записать, кто писал в личку")
         if member is not None:
             voice = f", сейчас сидит в голосовом «{member.voice.channel.name}»" if member.voice and member.voice.channel else ""
             context = (f"Тебе в личку пишет {who} — участник твоего сервера «{guild.name}»{voice}. Общайся в своём "

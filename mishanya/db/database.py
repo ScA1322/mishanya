@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, BotGrudge, BotMemory, BotRelation, ButtonMenu, Post, TempVoiceChannel, Ticket, VoiceSeen
+from .models import Base, BotGrudge, BotMemory, BotRelation, DmContact, ButtonMenu, Post, TempVoiceChannel, Ticket, VoiceSeen
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +63,13 @@ def _m7_memory_index(conn: Connection) -> None:
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_bot_memory_guild_user_id ON bot_memory (guild_id, user_id, id)")
 
 
+def _m8_sentences_dm(conn: Connection) -> None:
+    cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(bot_grudges)")}
+    if "until" not in cols:
+        conn.exec_driver_sql("ALTER TABLE bot_grudges ADD COLUMN until DATETIME")
+    Base.metadata.create_all(conn, tables=[DmContact.__table__])
+
+
 MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _m1_initial),
     (2, _m2_tickets_menus),
@@ -71,6 +78,7 @@ MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (5, _m5_mind),
     (6, _m6_relations),
     (7, _m7_memory_index),
+    (8, _m8_sentences_dm),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

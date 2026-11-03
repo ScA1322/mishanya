@@ -297,6 +297,21 @@ class BotGrudge(Base):
     role_ids: Mapped[list] = mapped_column(JSON, default=list)
     reason: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # когда срок выйдет сам
+
+
+class DmContact(Base):
+    """Кто писал боту в личку (не свои) — чтобы бот мог честно рассказать об этом доверенным."""
+
+    __tablename__ = "dm_contacts"
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    display: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(40), default="")  # участник сервера / чужак
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    last_text: Mapped[str] = mapped_column(String(300), default="")
+    first_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class BotRelation(Base):

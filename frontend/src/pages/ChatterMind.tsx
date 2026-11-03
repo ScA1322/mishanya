@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { del, errorText, get, post, put } from "../api";
 import { useApi } from "../hooks";
 import { Icon } from "../icons";
-import { Card, ChannelSelect, Field, MultiRoleSelect, NumberInput, ToggleRow, fmtDate, useConfirm, useToast } from "../ui";
+import { Card, ChannelSelect, Field, MultiRoleSelect, NumberInput, RoleSelect, ToggleRow, fmtDate, useConfirm, useToast } from "../ui";
 
 export interface VoiceTrigger { phrase: string; steam_app_id: number; title: string }
 export interface MindConfig {
   wake_words_in_text: boolean; dialog_seconds: number; reply_cooldown_seconds: number; dialog_max_per_hour: number;
   memory_enabled: boolean; memory_max: number; vision_enabled: boolean;
   punish_enabled: boolean; punish_min_level: number; punish_mute_minutes: number; punish_remove_roles: boolean;
-  apology_channel_id: string | null; punish_exempt_roles: string[];
+  apology_channel_id: string | null; punish_exempt_roles: string[]; punish_role_id: string | null;
   move_enabled: boolean; move_others_requires_permission: boolean;
   control_music: boolean; control_moderation: boolean; control_roles: boolean;
   control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean; audience_min_attitude: number;
@@ -179,11 +179,14 @@ export function GrudgeCard<C extends MindConfig>({ guildId, d, set }: { guildId:
             {LEVELS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
           </select>
         </Field>
-        <Field label="Мут — не больше, минут" hint="Срок бот выбирает сам по тяжести обиды: за подкол пару минут, за травлю часы. 0 — без мута. В муте нельзя писать даже в канал извинений"><NumberInput value={d.punish_mute_minutes} min={0} max={40320} onChange={(v) => set("punish_mute_minutes", v)} /></Field>
+        <Field label="Срок — не больше, минут" hint="Срок бот выбирает сам по тяжести обиды: за подкол пару минут, за травлю часы и сутки. По сроку всё вернётся само. 0 — только до извинений"><NumberInput value={d.punish_mute_minutes} min={0} max={40320} onChange={(v) => set("punish_mute_minutes", v)} /></Field>
         <Field label="Канал для извинений" hint="Должен быть виден всем — ролей у наказанного не будет" error={d.punish_enabled && !d.apology_channel_id ? "Без канала извиниться будет негде" : undefined}>
           <ChannelSelect value={d.apology_channel_id} onChange={(v) => set("apology_channel_id", v)} />
         </Field>
       </div>
+      <Field label="Роль «Приговорённый»" hint="Выдаётся на срок вместо мута Discord: настройте у неё права так, чтобы писать можно было только в канал извинений. Роль бота должна быть выше. Пусто — обычный мут Discord (тогда извиниться можно только после него)">
+        <RoleSelect value={d.punish_role_id} onChange={(v) => set("punish_role_id", v)} placeholder="— мут Discord —" />
+      </Field>
       <ToggleRow title="Забирать роли до извинения" hint="Снимаются все роли ниже роли бота; после извинения возвращаются" checked={d.punish_remove_roles} onChange={(v) => set("punish_remove_roles", v)} />
       <Field label="Кого не трогать" hint="Владелец, администраторы и те, чья роль выше роли бота, не наказываются в любом случае">
         <MultiRoleSelect value={d.punish_exempt_roles} onChange={(v) => set("punish_exempt_roles", v)} />
