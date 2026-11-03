@@ -70,9 +70,10 @@ export function ModelsCard<C extends MindConfig>({ status, onChange, d, set }: {
         <Field label="Модель для картинок" hint="Со зрением, например gpt-4o-mini у Inferhold. Пусто — скриншоты не смотрит"><input className="input" value={form.vision_model} placeholder="не задана" onChange={(e) => setForm({ ...form, vision_model: e.target.value.trim() })} /></Field>
       </div>
       <div className="row mt"><button className="btn btn-primary" disabled={busy || !form.base_url || !form.model} onClick={save}>Сохранить модели</button></div>
+      <VisionTest />
       <ToggleRow title="Смотреть картинки и скриншоты" hint="Когда к сообщению, обращённому к боту, приложена картинка, он её разглядывает. Сам DeepSeek картинки не видит — нужна модель для картинок"
         checked={d.vision_enabled} onChange={(v) => set("vision_enabled", v)} />
-      <div className="small muted">Демонстрацию экрана бот смотреть не может: Discord не отдаёт ботам видео.</div>
+      <div className="small muted">Демонстрацию экрана бот смотреть не может: Discord не отдаёт ботам видео — ни одному боту. Делитесь скриншотами в чат: «император, что тут?» — бот посмотрит картинку из этого или предыдущих сообщений.</div>
     </Card>
   );
 }
@@ -405,5 +406,25 @@ export function FamilyCard<C extends MindConfig>({ guildId, d, set }: { guildId:
       </div>
       {d.family.length < 10 && <button className="btn btn-sm mt" onClick={() => set("family", [...d.family, { user_id: null, username: "", title: "", prompt: "" }] as C["family"])}><Icon name="plus" size={14} />Добавить члена семьи</button>}
     </Card>
+  );
+}
+
+function VisionTest() {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<{ ok: boolean; answer?: string; expected?: string; error?: string | null; raw_error?: string; model: string } | null>(null);
+  const run = async () => {
+    setBusy(true);
+    try { setRes(await post("/api/ai/vision-test")); }
+    catch (e) { setRes({ ok: false, error: errorText(e), model: "" }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="mt">
+      <button className="btn" disabled={busy} onClick={run}><Icon name="image" size={15} />{busy ? "Проверяю…" : "Проверить зрение"}</button>
+      {res && (res.ok
+        ? <div className="alert alert-ok mt">Работает: модель {res.model} прочитала на картинке «{res.answer}».</div>
+        : <div className="alert alert-err mt">Не работает{res.model ? ` (модель ${res.model})` : ""}: {res.error}{res.answer ? ` Ответ модели: «${res.answer}», а на картинке было «${res.expected}».` : ""}
+            {res.raw_error && <div className="small mono mt">{res.raw_error}</div>}</div>)}
+    </div>
   );
 }

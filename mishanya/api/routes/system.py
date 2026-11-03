@@ -168,6 +168,32 @@ class AiModelsIn(BaseModel):
     vision_model: str = Field("", max_length=100, pattern=r"^[A-Za-z0-9_\-.:/]*$")
 
 
+@router.post("/ai/vision-test")
+async def vision_test(request: Request) -> dict:
+    """Проверка зрения: отправляет модели для картинок картинку с надписью и смотрит, прочитала ли она её."""
+    from ...services.chatter import ChatterError, explain_vision_error, generate, vision_test_image
+
+    s = get_app(request).settings
+    if not s.vision_model:
+        return {"ok": False, "error": "Модель для картинок не задана — впишите её в «Модели ИИ» и сохраните. "
+                                      "Сам DeepSeek картинки не видит.", "model": ""}
+    if not s.vision_key:
+        return {"ok": False, "error": "Не задан ключ ИИ.", "model": s.vision_model}
+    url, secret = await asyncio.to_thread(vision_test_image)
+    try:
+        answer = await generate(api_key=s.vision_key, base_url=s.vision_url, model=s.vision_model,
+                                system_prompt="Ты точно читаешь текст с картинок.", history="", channel="тест",
+                                bot_name="бот", mentioned=True, temperature=0, max_tokens=30, images=[url], raw=True,
+                                task="Что крупно написано на картинке? Ответь только этим текстом.")
+    except ChatterError as exc:
+        return {"ok": False, "error": explain_vision_error(str(exc), s.vision_model), "raw_error": str(exc),
+                "model": s.vision_model}
+    seen = answer.strip()
+    ok = secret.split()[-1] in seen
+    return {"ok": ok, "answer": seen[:200], "expected": secret, "model": s.vision_model,
+            "error": None if ok else "Модель ответила, но надпись не прочитала — похоже, картинку она не видит."}
+
+
 @router.put("/ai/models")
 async def set_ai_models(body: AiModelsIn, request: Request) -> dict:
     """Адрес API и модели (текст и картинки) — пишутся в .env и применяются сразу."""

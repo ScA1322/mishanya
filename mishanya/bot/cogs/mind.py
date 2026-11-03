@@ -221,6 +221,7 @@ class Mind(commands.Cog):
             task += ("\n(К сообщению приложена картинка, но ты её не видишь — глаза не настроены. Не выдумывай, что "
                      "на ней.)")
         if vision:
+            log.info("Картинки: отправляю %d шт. модели %s", len(images or []), s.vision_model)
             try:
                 text = await generate(
                     api_key=s.vision_key, base_url=s.vision_url, model=s.vision_model,

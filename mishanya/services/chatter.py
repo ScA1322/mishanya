@@ -100,6 +100,34 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
     return text
 
 
+def vision_test_image() -> tuple[str, str]:
+    """Картинка для проверки зрения: крупная надпись со случайным числом. Возвращает (data URL, что на ней написано)."""
+    import base64
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    secret = f"КОТ {random.randint(10, 99)}"
+    img = Image.new("RGB", (640, 260), (250, 245, 230))
+    draw = ImageDraw.Draw(img)
+    draw.text((320, 130), secret, fill=(20, 20, 20), anchor="mm", font=ImageFont.load_default(size=120))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode(), secret
+
+
+def explain_vision_error(error: str, model: str) -> str:
+    """Человеческое объяснение, почему модель не смотрит картинки."""
+    low = error.lower()
+    if "404" in low or "not found" in low or "does not exist" in low or "unknown model" in low:
+        return f"У сервиса нет модели «{model}». Проверьте название в его списке моделей."
+    if "image" in low or "vision" in low or "multimodal" in low or "content" in low and "400" in low:
+        return f"Модель «{model}» не принимает картинки. Выберите модель со зрением (например gpt-4o-mini)."
+    if "401" in low:
+        return "Сервис не принял ключ."
+    return error
+
+
 def set_env_value(env_path: Path, key: str, value: str) -> None:
     """Записывает KEY=value в .env (заменяет существующую строку или добавляет в конец)."""
     lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []

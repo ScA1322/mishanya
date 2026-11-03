@@ -162,3 +162,30 @@ async def test_paid_tts_engines_and_fallback(monkeypatch):
     assert calls[-1][0] == "https://x/v1/audio/speech" and calls[-1][2]["voice"] == "onyx"
     assert await tts.synthesize("fail", engine="elevenlabs") == (b"edge-mp3", "edge")
     tts.configure(None)
+
+
+async def test_vision_check(authed, app, fake_deepseek, monkeypatch):
+    """«Проверить зрение»: без модели — подсказка; модель прочитала надпись — ок; ошибка сервиса — понятная причина."""
+    from mishanya.services import chatter
+
+    r = (await authed.post("/api/ai/vision-test")).json()
+    assert r["ok"] is False and "не задана" in r["error"]
+    s = app.settings
+    s.deepseek_api_key, s.deepseek_base_url, s.vision_model = "sk-test", fake_deepseek["url"], "gpt-4o-mini"
+    monkeypatch.setattr(chatter, "vision_test_image", lambda: ("data:image/jpeg;base64,AAAA", "КОТ 42"))
+    fake_deepseek["reply"] = "КОТ 42"
+    r = (await authed.post("/api/ai/vision-test")).json()
+    assert r["ok"] is True and r["answer"] == "КОТ 42"
+    content = fake_deepseek["seen"][-1]["body"]["messages"][1]["content"]
+    assert content[1] == {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+    fake_deepseek["reply"] = "я не вижу картинок"
+    assert "не прочитала" in (await authed.post("/api/ai/vision-test")).json()["error"]
+    fake_deepseek["status"] = 404
+    assert "нет модели" in (await authed.post("/api/ai/vision-test")).json()["error"]
+
+
+def test_vision_test_image_is_readable():
+    from mishanya.services.chatter import vision_test_image
+
+    url, secret = vision_test_image()
+    assert url.startswith("data:image/jpeg;base64,") and secret.startswith("КОТ ")
