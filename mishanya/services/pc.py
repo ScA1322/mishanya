@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import io
 import logging
 import os
@@ -48,9 +49,35 @@ def start_menu_programs() -> dict[str, str]:
     return out
 
 
+APPS_PREFIX = "shell:AppsFolder\\"
+
+
+def start_apps() -> dict[str, str]:
+    """Все приложения из меню «Пуск», включая установленные из Microsoft Store (Spotify, Telegram, WhatsApp…),
+    у которых нет обычного ярлыка. Имя → shell:AppsFolder + AppID."""
+    if sys.platform != "win32":
+        return {}
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ConvertTo-Json -Compress"],
+                             capture_output=True, text=True, encoding="utf-8", timeout=30,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        rows = json.loads(out or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    if isinstance(rows, dict):
+        rows = [rows]
+    skip = ("uninstall", "удал", "readme", "help", "справк", "documentation", "website", "сайт")
+    return {r["Name"]: APPS_PREFIX + r["AppID"] for r in rows
+            if isinstance(r, dict) and r.get("Name") and r.get("AppID") and not any(x in r["Name"].lower() for x in skip)}
+
+
 def catalog(custom: list[tuple[str, str]], use_start_menu: bool) -> dict[str, str]:
-    """Что бот может открыть: свои программы из панели (приоритет) + ярлыки «Пуска»."""
-    items = start_menu_programs() if use_start_menu and sys.platform == "win32" else {}
+    """Что бот может открыть: свои программы из панели (приоритет) + всё из меню «Пуск» (и из Microsoft Store)."""
+    items: dict[str, str] = {}
+    if use_start_menu and sys.platform == "win32":
+        items.update(start_menu_programs())
+        items.update(start_apps())
     items.update({name: target for name, target in custom})
     return items
 
@@ -61,6 +88,14 @@ def open_program(name: str, items: dict[str, str]) -> str:
     if found is None:
         raise PcError(f"Не нашёл программу «{name}» среди установленных.")
     target = items[found]  # type: ignore[index]
+    if target.startswith(APPS_PREFIX):
+        if sys.platform != "win32":
+            raise PcError("Открывать программы можно только на Windows.")
+        if any(c in target for c in '"<>|&;'):
+            raise PcError("Странный идентификатор приложения — не открываю.")
+        subprocess.Popen(["explorer.exe", target], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # noqa: S603, S607
+        log.info("Компьютер: открыл «%s» (%s)", found, target)
+        return str(found)
     if target.startswith("steam://"):
         if not target.removeprefix("steam://rungameid/").isdigit():
             raise PcError("Неверная ссылка Steam.")

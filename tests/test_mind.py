@@ -688,3 +688,17 @@ async def test_chat_scan_waits_for_pause_and_batches(monkeypatch):
         await _a.sleep(0.01)
     await _a.sleep(0.2)
     assert seen == [("кто тут главный?", False, True)]  # одно решение по последнему сообщению после паузы
+
+
+def test_pc_opens_store_apps(monkeypatch):
+    """Приложения из Microsoft Store (Spotify, Telegram) открываются через shell:AppsFolder."""
+    from mishanya.services import pc
+
+    launched = []
+    monkeypatch.setattr(pc.sys, "platform", "win32")
+    monkeypatch.setattr(pc.subprocess, "Popen", lambda args, **kw: launched.append(args))
+    items = {"Telegram": pc.APPS_PREFIX + "Telegram.TelegramDesktop"}
+    assert pc.open_program("telegram", items) == "Telegram"
+    assert launched == [["explorer.exe", "shell:AppsFolder\Telegram.TelegramDesktop"]]
+    with pytest.raises(pc.PcError):
+        pc.open_program("evil", {"evil": pc.APPS_PREFIX + "x & calc"})
