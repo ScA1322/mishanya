@@ -55,6 +55,11 @@ class Settings:
     stt_model: str = "gpt-4o-transcribe"
     # Модель со зрением для скриншотов (например gpt-4o-mini у Inferhold). Пусто — картинки не смотрит.
     vision_model: str = ""
+    # Озвучка: ElevenLabs (свой ключ) и OpenAI-совместимый /audio/speech (по умолчанию ключ и адрес DeepSeek/Inferhold)
+    elevenlabs_api_key: str = ""
+    tts_api_key: str = ""
+    tts_base_url: str = ""
+    tts_model: str = "tts-1"
     vision_api_key: str = ""
     vision_base_url: str = ""
     env_path: Path = field(default_factory=lambda: BASE_DIR / ".env")
@@ -66,6 +71,14 @@ class Settings:
     @property
     def stt_url(self) -> str:
         return self.stt_base_url or self.deepseek_base_url
+
+    @property
+    def tts_key(self) -> str:
+        return self.tts_api_key or self.deepseek_api_key
+
+    @property
+    def tts_url(self) -> str:
+        return self.tts_base_url or self.deepseek_base_url
 
     @property
     def vision_key(self) -> str:
@@ -139,6 +152,10 @@ def load_settings(env_file: Path | None = None) -> Settings:
         stt_base_url=os.getenv("STT_BASE_URL", "").strip().rstrip("/"),
         stt_model=os.getenv("STT_MODEL", "").strip() or "gpt-4o-transcribe",
         vision_model=os.getenv("VISION_MODEL", "").strip(),
+        elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", "").strip(),
+        tts_api_key=os.getenv("TTS_API_KEY", "").strip(),
+        tts_base_url=os.getenv("TTS_BASE_URL", "").strip().rstrip("/"),
+        tts_model=os.getenv("TTS_MODEL", "").strip() or "tts-1",
         vision_api_key=os.getenv("VISION_API_KEY", "").strip(),
         vision_base_url=os.getenv("VISION_BASE_URL", "").strip().rstrip("/"),
         env_path=env_path,

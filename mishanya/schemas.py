@@ -424,7 +424,10 @@ class ChatterConfig(Strict):
     voice_max_per_hour: int = Field(2, ge=1, le=12)
     voice_min_members: int = Field(1, ge=1, le=50)
     voice_lines: int = Field(2, ge=1, le=5)  # фраз за один заход
-    voice_engine: Literal["auto", "edge", "google"] = "auto"  # auto: Microsoft, при сбое — Google
+    # auto: Microsoft, при сбое — Google; elevenlabs/openai — платные быстрые голоса, при сбое — Microsoft
+    voice_engine: Literal["auto", "edge", "google", "elevenlabs", "openai"] = "auto"
+    voice_eleven_id: str = Field("pNInz6obpgDQGcFmaJgB", pattern=r"^[A-Za-z0-9]{10,40}$")  # Adam (мужской)
+    voice_openai: str = Field("onyx", pattern=r"^[a-z]{2,20}$")
     voice_name: Literal["dmitry", "svetlana"] = "dmitry"  # голос Microsoft
     voice_rate: int = Field(10, ge=-50, le=100)  # скорость речи, %
     voice_pitch: int = Field(-5, ge=-50, le=50)  # высота голоса, Гц

@@ -23,7 +23,7 @@ from ...schemas import ChatterConfig
 from ...services.chatter import ChatterError, generate, pick_phrase
 from ...services.music import VOICE_MISSING, ffmpeg_executable, voice_available
 from ...services.stt import SttError, UtteranceCollector, pcm_to_wav, transcribe
-from ...services.tts import TtsError, ffmpeg_options, synthesize
+from ...services.tts import TtsError, ffmpeg_options, speak
 from ..client import MishanyaBot
 from ..utils import UserFacingError, ok_embed, require_guild, respond
 
@@ -326,7 +326,7 @@ class Listener(commands.Cog):
         t_ai = time.monotonic()
         # Озвучиваем фразы параллельно и начинаем говорить, как только готова первая.
         parts = [p for p in re.split(r"(?<=[.!?…])\s+", text) if p.strip()] or [text]
-        jobs = [asyncio.create_task(synthesize(p, cfg.voice_name, cfg.voice_rate, cfg.voice_pitch, cfg.voice_engine))
+        jobs = [asyncio.create_task(speak(p, cfg))
                 for p in parts[:4]]
         session.dialog.append((me, text))
         session.recent.append((time.time(), me, text, False))

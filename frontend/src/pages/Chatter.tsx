@@ -12,7 +12,7 @@ interface ChatterConfig extends MindConfig {
   reply_on_mention: boolean; reply_to_message: boolean; use_ai: boolean; system_prompt: string; context_messages: number;
   temperature: number; max_tokens: number; phrases: string[]; fallback_to_phrases: boolean;
   voice_enabled: boolean; voice_channels: string[]; voice_interval_minutes: number; voice_max_per_hour: number;
-  voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google"; voice_name: "dmitry" | "svetlana";
+  voice_min_members: number; voice_lines: number; voice_engine: "auto" | "edge" | "google" | "elevenlabs" | "openai"; voice_eleven_id: string; voice_openai: string; voice_name: "dmitry" | "svetlana";
   voice_rate: number; voice_pitch: number;
   listen_wake_words: string[]; listen_followup_seconds: number; listen_min_seconds: number; listen_max_minutes: number; listen_auto: boolean;
 }
@@ -130,6 +130,37 @@ function VoiceAdd({ exclude, onAdd }: { exclude: string[]; onAdd: (id: string) =
     emptyText="Голосовых каналов нет" onChange={(v) => v && onAdd(v)} />;
 }
 
+const ELEVEN_VOICES: [string, string][] = [
+  ["pNInz6obpgDQGcFmaJgB", "Adam — низкий, уверенный"],
+  ["TxGEqnHWrfWFTfGW9XjX", "Josh — молодой, живой"],
+  ["VR6AewLTigWG4xSOukaG", "Arnold — грубый, резкий"],
+  ["ErXwobaYiN019PkySvjV", "Antoni — спокойный"],
+  ["yoZ06aMxZJJ28mfd3POQ", "Sam — хрипловатый"],
+];
+
+function ElevenKey() {
+  const toast = useToast();
+  const st = useApi<{ eleven_configured: boolean }>("/api/ai/elevenlabs-status", []);
+  const [key, setKey] = useState("");
+  const save = async (value: string) => {
+    try { await put("/api/ai/elevenlabs-key", { key: value.trim() }); toast("ok", value ? "Ключ ElevenLabs сохранён" : "Ключ удалён"); setKey(""); st.reload(); }
+    catch (e) { toast("err", errorText(e)); }
+  };
+  return (
+    <div className="mt">
+      {st.data?.eleven_configured
+        ? <div className="row"><span className="badge badge-ok">ключ ElevenLabs задан</span><span className="spacer" /><button className="btn btn-sm btn-danger" onClick={() => save("")}>Удалить</button></div>
+        : <div className="alert alert-warn">Нужен ключ ElevenLabs: elevenlabs.io → Profile → API Keys. Бесплатно ~20 тысяч символов в месяц. Пока ключа нет, бот говорит голосом Microsoft.</div>}
+      <div className="row mt" style={{ alignItems: "flex-end" }}>
+        <Field label={st.data?.eleven_configured ? "Заменить ключ" : "Ключ ElevenLabs"} hint="Хранится только в .env на этом компьютере">
+          <input className="input" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} style={{ minWidth: 320 }} />
+        </Field>
+        <button className="btn btn-primary" disabled={key.trim().length < 10} onClick={() => save(key)}>Сохранить ключ</button>
+      </div>
+    </div>
+  );
+}
+
 function VoiceCard({ guildId, d, set }: {
   guildId: string; d: ChatterConfig; set: <K extends keyof ChatterConfig>(k: K, v: ChatterConfig[K]) => void;
 }) {
@@ -174,19 +205,38 @@ function VoiceCard({ guildId, d, set }: {
 
       <h3 className="mt">Голос</h3>
       <div className="grid grid-2 mt">
-        <Field label="Озвучка" hint="Microsoft звучит живее, но часто не отвечает — тогда бот сам переключится на Google">
+        <Field label="Озвучка" hint="ElevenLabs — самая быстрая (0,1–0,3 с) и стабильная. Microsoft бесплатный, но часто не отвечает. При сбое платного движка бот переключится на Microsoft">
           <select className="input" value={d.voice_engine} onChange={(e) => set("voice_engine", e.target.value as ChatterConfig["voice_engine"])}>
-            <option value="auto">Microsoft, при сбое — Google (рекомендуется)</option>
+            <option value="elevenlabs">ElevenLabs — быстро, мужские голоса (нужен ключ)</option>
+            <option value="openai">Через ключ ИИ (OpenAI-совместимый, голос onyx и др.)</option>
+            <option value="auto">Microsoft, при сбое — Google (бесплатно)</option>
             <option value="edge">Только Microsoft</option>
             <option value="google">Только Google (стабильно, женский голос)</option>
           </select>
         </Field>
-        <Field label="Голос Microsoft">
-          <select className="input" value={d.voice_name} disabled={d.voice_engine === "google"} onChange={(e) => set("voice_name", e.target.value as ChatterConfig["voice_name"])}>
-            <option value="dmitry">Дмитрий (мужской)</option>
-            <option value="svetlana">Светлана (женский)</option>
-          </select>
-        </Field>
+        {d.voice_engine === "elevenlabs" ? (
+          <Field label="Голос ElevenLabs" hint="Готовые мужские голоса или ID своего голоса из elevenlabs.io → Voices">
+            <select className="input" value={ELEVEN_VOICES.some(([id]) => id === d.voice_eleven_id) ? d.voice_eleven_id : "custom"}
+              onChange={(e) => e.target.value !== "custom" && set("voice_eleven_id", e.target.value)}>
+              {ELEVEN_VOICES.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              <option value="custom">Свой голос (ID ниже)</option>
+            </select>
+            <input className="input mt" value={d.voice_eleven_id} placeholder="ID голоса" onChange={(e) => set("voice_eleven_id", e.target.value.trim())} />
+          </Field>
+        ) : d.voice_engine === "openai" ? (
+          <Field label="Голос" hint="Мужские: onyx (низкий), echo, ash. Работает, если сервис по ключу ИИ умеет /audio/speech">
+            <select className="input" value={d.voice_openai} onChange={(e) => set("voice_openai", e.target.value)}>
+              {["onyx", "echo", "ash", "ballad", "verse", "alloy", "fable", "nova", "shimmer", "coral", "sage"].map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </Field>
+        ) : (
+          <Field label="Голос Microsoft">
+            <select className="input" value={d.voice_name} disabled={d.voice_engine === "google"} onChange={(e) => set("voice_name", e.target.value as ChatterConfig["voice_name"])}>
+              <option value="dmitry">Дмитрий (мужской)</option>
+              <option value="svetlana">Светлана (женский)</option>
+            </select>
+          </Field>
+        )}
         <Field label={`Скорость: ${d.voice_rate > 0 ? "+" : ""}${d.voice_rate}%`}>
           <input type="range" min={-50} max={100} step={5} value={d.voice_rate} onChange={(e) => set("voice_rate", Number(e.target.value))} />
         </Field>
@@ -194,6 +244,8 @@ function VoiceCard({ guildId, d, set }: {
           <input type="range" min={-50} max={50} step={5} value={d.voice_pitch} disabled={d.voice_engine === "google"} onChange={(e) => set("voice_pitch", Number(e.target.value))} />
         </Field>
       </div>
+
+      {d.voice_engine === "elevenlabs" && <ElevenKey />}
 
       <h3 className="mt">Попробовать</h3>
       <Field label="Текст">

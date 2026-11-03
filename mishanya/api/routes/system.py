@@ -144,6 +144,24 @@ async def set_ai_key(body: AiKeyIn, request: Request) -> dict:
     return {"ai_configured": bool(key), "key_hint": f"…{key[-4:]}" if key else None}
 
 
+@router.get("/ai/elevenlabs-status")
+async def elevenlabs_status(request: Request) -> dict:
+    return {"eleven_configured": bool(get_app(request).settings.elevenlabs_api_key)}
+
+
+@router.put("/ai/elevenlabs-key")
+async def set_elevenlabs_key(body: AiKeyIn, request: Request) -> dict:
+    """Ключ ElevenLabs для мужского голоса с минимальной задержкой. Пишется в .env, сам ключ панели не возвращается."""
+    app = get_app(request)
+    key = body.key.strip()
+    try:
+        await asyncio.to_thread(set_env_value, app.settings.env_path, "ELEVENLABS_API_KEY", key)
+    except OSError as exc:
+        raise HTTPException(500, f"Не удалось записать .env: {exc}") from None
+    app.settings.elevenlabs_api_key = key
+    return {"eleven_configured": bool(key)}
+
+
 class AiModelsIn(BaseModel):
     base_url: str = Field(max_length=200, pattern=r"^https?://[A-Za-z0-9.\-:/_]+$")
     model: str = Field(max_length=100, pattern=r"^[A-Za-z0-9_\-.:/]+$")

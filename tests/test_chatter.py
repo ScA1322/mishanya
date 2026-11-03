@@ -119,11 +119,11 @@ async def test_voice_api(authed, monkeypatch):
     cfg = (await authed.get(f"/api/guilds/{GID}/config/chatter")).json()
     assert cfg["voice_enabled"] is False and cfg["voice_engine"] == "auto"
 
-    async def fake_synth(text, voice, rate, pitch, engine):  # noqa: ANN001
-        assert (voice, engine) == ("dmitry", "auto")
+    async def fake_speak(text, c):  # noqa: ANN001
+        assert (c.voice_name, c.voice_engine) == ("dmitry", "auto")
         return b"ID3fake-mp3", "google"
 
-    monkeypatch.setattr(features, "synthesize", fake_synth)
+    monkeypatch.setattr(features, "speak", fake_speak)
     r = await authed.post(f"/api/guilds/{GID}/chatter/tts-preview", json={"text": "холопы", "config": cfg})
     assert r.status_code == 200 and r.content == b"ID3fake-mp3" and r.headers["x-tts-engine"] == "google"
     bad = await authed.post(f"/api/guilds/{GID}/chatter/tts-preview", json={"text": "x", "config": {**cfg, "voice_rate": 500}})
@@ -131,3 +131,34 @@ async def test_voice_api(authed, monkeypatch):
     # без подключённого бота зайти в канал нельзя — понятная ошибка
     r = await authed.post(f"/api/guilds/{GID}/chatter/voice-say", json={"config": cfg, "channel_id": GID})
     assert r.status_code == 409
+
+
+async def test_paid_tts_engines_and_fallback(monkeypatch):
+    """ElevenLabs/OpenAI: правильный запрос; при сбое — Microsoft, а не женский Google."""
+    from types import SimpleNamespace
+
+    from mishanya.services import tts
+
+    calls = []
+
+    async def fake_post(url, headers, body, name):  # noqa: ANN001
+        calls.append((url, headers, body))
+        if "fail" in body.get("text", body.get("input", "")):
+            raise tts.TtsError("сбой")
+        return b"mp3"
+
+    async def fake_edge(text, voice, rate, pitch):  # noqa: ANN001
+        return b"edge-mp3"
+
+    monkeypatch.setattr(tts, "_post_audio", fake_post)
+    monkeypatch.setattr(tts, "_edge", fake_edge)
+    monkeypatch.setattr(tts, "_edge_failed_at", 0.0)
+    tts.configure(SimpleNamespace(elevenlabs_api_key="el-key", tts_key="sk", tts_url="https://x/v1", tts_model="tts-1"))
+    assert await tts.synthesize("привет", engine="elevenlabs", voice_id="pNInz6obpgDQGcFmaJgB", rate=10) == (b"mp3", "elevenlabs")
+    url, headers, body = calls[-1]
+    assert url.endswith("/pNInz6obpgDQGcFmaJgB?output_format=mp3_44100_128") and headers == {"xi-api-key": "el-key"}
+    assert body["model_id"] == "eleven_flash_v2_5" and body["voice_settings"]["speed"] == 1.1
+    assert await tts.synthesize("привет", engine="openai", voice_id="onyx") == (b"mp3", "openai")
+    assert calls[-1][0] == "https://x/v1/audio/speech" and calls[-1][2]["voice"] == "onyx"
+    assert await tts.synthesize("fail", engine="elevenlabs") == (b"edge-mp3", "edge")
+    tts.configure(None)

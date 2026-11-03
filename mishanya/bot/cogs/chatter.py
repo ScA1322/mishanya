@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 from ...schemas import ChatterConfig
 from ...services.chatter import ChatterError, format_history, generate, pick_phrase
 from ...services.music import VOICE_MISSING, ffmpeg_executable, voice_available
-from ...services.tts import TtsError, ffmpeg_options, synthesize
+from ...services.tts import TtsError, ffmpeg_options, speak
 from ..client import MishanyaBot
 from .mind import collect_images, read_history
 from ..utils import UserFacingError, ok_embed, require_guild, respond
@@ -302,8 +302,7 @@ class Chatter(commands.Cog):
             audio: list[tuple[bytes, str]] = []
             for line in lines:
                 try:
-                    audio.append(await synthesize(line, cfg.voice_name, cfg.voice_rate, cfg.voice_pitch,
-                                                  cfg.voice_engine))
+                    audio.append(await speak(line, cfg))
                 except TtsError as exc:
                     log.warning("Болтовня в голосе: %s", exc)
             if not audio:

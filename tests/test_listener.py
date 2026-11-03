@@ -147,7 +147,7 @@ async def test_wake_word_and_followup(monkeypatch):
 
     monkeypatch.setattr(L, "transcribe", fake_transcribe)
     monkeypatch.setattr(L, "generate", fake_generate)
-    monkeypatch.setattr(L, "synthesize", fake_synth)
+    monkeypatch.setattr(L, "speak", fake_synth)
     monkeypatch.setattr(L.discord, "FFmpegPCMAudio", lambda *a, **kw: object())
 
     played = []

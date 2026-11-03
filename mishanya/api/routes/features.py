@@ -17,7 +17,7 @@ from ...services.chatter import ChatterError, format_history, generate, pick_phr
 from ...services.menus import MAX_IMAGE_BYTES, MenuLimit
 from ...services.music import self_test, voice_available
 from ...services.posts import PostLimit
-from ...services.tts import TtsError, synthesize
+from ...services.tts import TtsError, speak
 from ...services.templates import SAMPLE_VALUES, member_values
 from ...db.models import utcnow
 from ..auth import require_auth
@@ -343,6 +343,7 @@ def _chatter_status(app) -> dict:  # noqa: ANN001
     key = s.deepseek_api_key
     return {"ai_configured": bool(key), "key_hint": f"…{key[-4:]}" if len(key) >= 8 else None,
             "model": s.deepseek_model, "base_url": s.deepseek_base_url, "vision_model": s.vision_model,
+            "eleven_configured": bool(s.elevenlabs_api_key),
             "last_error": app.chatter_error}
 
 
@@ -403,7 +404,7 @@ async def chatter_tts_preview(body: TtsPreviewIn, guild_id: int = Depends(guild_
     except ValidationError as exc:
         raise HTTPException(422, validation_detail(exc)) from None
     try:
-        data, engine = await synthesize(body.text, cfg.voice_name, cfg.voice_rate, cfg.voice_pitch, cfg.voice_engine)
+        data, engine = await speak(body.text, cfg)
     except TtsError as exc:
         raise HTTPException(502, str(exc)) from None
     return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": engine, "Cache-Control": "no-store"})
