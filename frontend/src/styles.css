@@ -626,3 +626,75 @@ td { padding: 12px; }
 
 .log-tail { max-height: 460px; overflow: auto; margin: 0; padding: 14px; border-radius: 10px; background: #0b0d10; color: #d6dae2;
   font-family: ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+
+/* ================================================== v4: чёрная тема (по умолчанию) */
+
+:root[data-theme="dark"] {
+  --bg: #050507; --surface: #0c0c10; --surface-2: #15151b; --surface-3: #1e1e26; --border: #22222b;
+  --text: #ececf2; --muted: #8d8d9c;
+  --accent: #8b7cf8; --accent-hover: #a194fa; --accent-soft: #1b1730;
+  --ok: #41d48a; --ok-soft: #0f2a1c; --warn: #f0b04a; --warn-soft: #2e2410; --err: #ff6b6b; --err-soft: #331517;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    --bg: #050507; --surface: #0c0c10; --surface-2: #15151b; --surface-3: #1e1e26; --border: #22222b;
+    --text: #ececf2; --muted: #8d8d9c;
+    --accent: #8b7cf8; --accent-hover: #a194fa; --accent-soft: #1b1730;
+  }
+}
+
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(900px 500px at 105% -10%, rgba(139, 124, 248, 0.13), transparent 60%),
+    radial-gradient(700px 500px at -10% 110%, rgba(235, 69, 158, 0.07), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+:root[data-theme="dark"] .sidebar { background: rgba(8, 8, 11, 0.92); border-right-color: #17171d;
+  backdrop-filter: blur(12px); }
+:root[data-theme="dark"] .topbar { background: rgba(8, 8, 11, 0.92); backdrop-filter: blur(12px); }
+:root[data-theme="dark"] .nav-link { color: #b9b9c6; }
+:root[data-theme="dark"] .nav-link:hover { background: #121217; color: var(--text); }
+:root[data-theme="dark"] .nav-link.active { color: #fff;
+  background: linear-gradient(90deg, rgba(139, 124, 248, 0.22), rgba(139, 124, 248, 0.05)); }
+:root[data-theme="dark"] .guild-switch { background: #121217; border: 1px solid var(--border); }
+:root[data-theme="dark"] .card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 120px), var(--surface);
+  border-color: #1d1d25;
+  transition: border-color 0.2s;
+}
+:root[data-theme="dark"] .card:hover { border-color: #2a2a35; }
+:root[data-theme="dark"] .input, :root[data-theme="dark"] .select, :root[data-theme="dark"] .textarea {
+  background: #08080b; border-color: #25252e;
+}
+:root[data-theme="dark"] .input:hover, :root[data-theme="dark"] .select:hover, :root[data-theme="dark"] .textarea:hover {
+  border-color: #33333f;
+}
+:root[data-theme="dark"] .btn { background: #121217; border-color: #26262f; }
+:root[data-theme="dark"] .btn:hover:not(:disabled) { background: #1a1a21; border-color: #33333f; }
+:root[data-theme="dark"] .btn-ghost { background: transparent; border-color: transparent; }
+:root[data-theme="dark"] .btn-primary {
+  background: linear-gradient(135deg, #8b7cf8, #b46cf0); border-color: transparent; color: #fff;
+  box-shadow: 0 4px 16px rgba(139, 124, 248, 0.28);
+}
+:root[data-theme="dark"] .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #9c8ff9, #c27ff3); box-shadow: 0 6px 20px rgba(139, 124, 248, 0.38);
+}
+:root[data-theme="dark"] .btn-danger { background: transparent; }
+:root[data-theme="dark"] .toggle .track { background: #2a2a34; }
+:root[data-theme="dark"] code { background: #15151b; color: #d6d0ff; }
+:root[data-theme="dark"] .badge { background: #17171d; }
+:root[data-theme="dark"] .badge-ok { background: var(--ok-soft); }
+:root[data-theme="dark"] .badge-warn { background: var(--warn-soft); }
+:root[data-theme="dark"] .badge-err { background: var(--err-soft); }
+:root[data-theme="dark"] .badge-accent { background: var(--accent-soft); }
+:root[data-theme="dark"] ::selection { background: rgba(139, 124, 248, 0.4); }
+:root[data-theme="dark"] * { scrollbar-color: #2a2a34 transparent; }
+:root[data-theme="dark"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #24242d; border-radius: 10px; border: 2px solid #050507; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #34343f; }
+:root[data-theme="dark"] ::-webkit-scrollbar-track { background: transparent; }
+:root[data-theme="dark"] .toggle input:checked + .track { background: linear-gradient(135deg, #8b7cf8, #b46cf0); }

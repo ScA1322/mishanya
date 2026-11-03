@@ -649,9 +649,9 @@ const THEME_KEY = "mishanya-theme";
 export function readTheme(): Theme {
   try {
     const t = localStorage.getItem(THEME_KEY);
-    return t === "light" || t === "dark" ? t : "system";
+    return t === "light" || t === "system" ? t : "dark"; // по умолчанию — чёрная тема
   } catch {
-    return "system";
+    return "dark";
   }
 }
 
