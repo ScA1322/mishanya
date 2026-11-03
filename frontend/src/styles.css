@@ -698,3 +698,25 @@ td { padding: 12px; }
 :root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #34343f; }
 :root[data-theme="dark"] ::-webkit-scrollbar-track { background: transparent; }
 :root[data-theme="dark"] .toggle input:checked + .track { background: linear-gradient(135deg, #8b7cf8, #b46cf0); }
+
+/* Снег: поверх страницы, клики проходят насквозь */
+.snowfall { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 60; }
+:root[data-theme="light"] .snowfall { filter: drop-shadow(0 0 1px rgba(80, 90, 120, 0.6)); }
+.snow-toggle { align-self: flex-start; margin: 8px 0 2px 4px; border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--muted); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 13.5px; cursor: pointer; }
+.snow-toggle:hover { color: var(--text); }
+.snow-toggle.active { color: #cfe8ff; border-color: color-mix(in srgb, #9fd3ff 35%, var(--border)); }
+
+/* Космический фон с чёрной дырой (только в тёмной теме) */
+.space-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 0; }
+:root:not([data-theme="dark"]) .space-bg { display: none; }
+.app { position: relative; z-index: 1; }
+.effects-toggles { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 2px 4px; }
+.effects-toggles .snow-toggle { margin: 0; }
+:root[data-theme="dark"][data-space="on"] body { background: #040406; }
+:root[data-theme="dark"][data-space="on"] .sidebar { background: rgba(6, 6, 9, 0.72); }
+:root[data-theme="dark"][data-space="on"] .card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 120px), rgba(10, 10, 14, 0.6);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+:root[data-theme="dark"][data-space="on"] .login-card { backdrop-filter: blur(8px); }
