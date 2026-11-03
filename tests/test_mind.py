@@ -22,7 +22,7 @@ def test_parse_actions():
                  "actions": [{"type": "move", "who": "я", "to": "Курилка"}],
                  "attitude": 0, "ignore_minutes": None, "unignore": False}
     a = parse_actions('{"reply": "отъебись", "attitude": -9, "ignore_minutes": 30}')
-    assert (a["attitude"], a["ignore_minutes"], a["unignore"]) == (-3, 30, False)
+    assert (a["attitude"], a["ignore_minutes"], a["unignore"]) == (-9, 30, False)
     a = parse_actions('{"reply": "вырубаю", "actions": [{"type": "Music", "do": "stop"}, "мусор", {"do": "x"}]}')
     assert a["actions"] == [{"type": "music", "do": "stop"}]
     assert parse_actions("просто текст")["reply"] == "просто текст"
@@ -554,3 +554,27 @@ def test_music_query_cleanup():
     assert simplify_query("вруби рандом плейлист с MORGENSHTERN на несколько часов") == "MORGENSHTERN"
     assert simplify_query("MORGENSHTERN Cadillac") == "MORGENSHTERN Cadillac"
     assert classify_query("MORGENSHTERN", 30) == "scsearch30:MORGENSHTERN"
+
+
+async def test_timer_and_audience(app, monkeypatch):
+    """«Засеки 15 минут» — напоминание с тегом; в войс зовут свои или те, к кому отношение от порога."""
+    cog, _, _ = _cog(app, monkeypatch, [])
+    await app.guilds.ensure(GID, "g")
+    guild = SimpleNamespace(id=GID, voice_client=None)
+    vasya = FakeMember(id=5, name="vasya", display_name="Вася", mention="<@5>", guild=guild, voice=None, bot=False)
+    notes = await cog.do_actions(vasya, [{"type": "timer", "minutes": 15, "text": "чай"}], ChatterConfig(), None)
+    assert notes == ["⏱️ Засёк 15 мин — тегну <@5>, когда выйдет."]
+    r = (await app.reminders.list_for_user(5))[0]
+    assert "Время вышло! чай" in r.text
+
+    cfg = ChatterConfig(confidants=["999999999999999999"], audience_min_attitude=15)
+    app.settings.owner_id = None
+    assert await cog.may_summon(vasya, cfg) == (False, 0)
+    await app.mind.update_relation(GID, 5, delta=10)
+    await app.mind.update_relation(GID, 5, delta=10)
+    assert await cog.may_summon(vasya, cfg) == (True, 20)  # шкала до 100, порог 15
+    boss = FakeMember(id=999999999999999999, name="boss", guild=guild)
+    assert (await cog.may_summon(boss, cfg))[0] is True  # свой — всегда
+    vasya.voice = SimpleNamespace(channel=None)
+    cog.bot = SimpleNamespace(get_cog=lambda n: None)
+    assert "зайди в голосовой" in (await cog.do_actions(vasya, [{"type": "join_voice"}], cfg, None))[0]

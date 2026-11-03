@@ -46,6 +46,13 @@ def _score_self(who: str, requester: discord.Member) -> bool:
     return bool(n) and n in (normalize(requester.display_name), normalize(requester.name))
 
 
+def format_seconds(s: int) -> str:
+    if s < 60:
+        return f"{s} сек"
+    m, sec = divmod(s, 60)
+    return fmt_minutes(m) + (f" {sec} сек" if sec and m < 10 else "")
+
+
 def fmt_minutes(m: int) -> str:
     if m < 60:
         return f"{m} мин"
@@ -406,7 +413,10 @@ class Mind(commands.Cog):
         if author is not None:
             rel = await self.app.mind.relation(guild.id, author.id)
             attitude = rel.attitude if rel else 0
-            context += f"\nТвоё отношение к {author.display_name}: {attitude:+d} (от -10 ненавидишь до +10 любимчик)."
+            context += (f"\nТвоё отношение к {author.display_name}: {attitude:+d} (от -100 ненавидишь до +100 любимчик). "
+                        + ("Он свой — в войс к нему заходишь беспрекословно." if self.is_trusted(author.id, cfg, author)
+                           else f"Звать тебя в войс он может, только если отношение не ниже {cfg.audience_min_attitude} — "
+                                + ("сейчас можно." if attitude >= cfg.audience_min_attitude else "сейчас НЕЛЬЗЯ: откажи и съязви.")))
             if rel and rel.ignore_until and rel.ignore_until > utcnow():
                 ignored = True
                 left = max(1, int((rel.ignore_until - utcnow()).total_seconds() // 60))
@@ -638,6 +648,14 @@ class Mind(commands.Cog):
                     note = await self._relay_dm(requester, a, cfg)
                     if note:
                         notes.append(note)
+                elif kind in ("join_voice", "leave_voice"):
+                    note = await self._voice_presence(requester, kind == "join_voice", cfg)
+                    if note:
+                        notes.append(note)
+                elif kind == "timer":
+                    note = await self._timer(requester, a, channel)
+                    if note:
+                        notes.append(note)
                 elif kind in ("pc_open", "pc_close"):
                     note = await self._pc_action(requester, kind, a, cfg)
                     if note:
@@ -776,6 +794,52 @@ class Mind(commands.Cog):
             text = f"🔨 Забанил **{who.display_name}**. За: {why}."
         await self.notify(guild, cfg, f"{text} («{guild.name}», @{who.name}, попросил {requester.display_name})")
         return text
+
+    async def may_summon(self, member: discord.Member, cfg: ChatterConfig) -> tuple[bool, int]:
+        """Можно ли позвать бота в войс: своим — всегда, остальным — при отношении не ниже порога."""
+        rel = await self.app.mind.relation(member.guild.id, member.id)
+        attitude = rel.attitude if rel else 0
+        return self.is_trusted(member.id, cfg, member) or attitude >= cfg.audience_min_attitude, attitude
+
+    async def _voice_presence(self, requester: discord.Member, join: bool, cfg: ChatterConfig) -> str | None:
+        listener = self.bot.get_cog("Listener")
+        guild = requester.guild
+        if not join:
+            if guild.voice_client is None:
+                return None
+            if listener is not None and guild.id in getattr(listener, "sessions", {}):
+                await listener.stop(guild.id, f"попросил {requester.display_name}")  # type: ignore[attr-defined]
+            elif guild.voice_client is not None:
+                await guild.voice_client.disconnect(force=False)
+            return "👋 Вышел из войса."
+        channel = requester.voice.channel if requester.voice else None
+        if not isinstance(channel, discord.VoiceChannel):
+            return "⚠️ Сначала зайди в голосовой канал сам."
+        allowed, attitude = await self.may_summon(requester, cfg)
+        if not allowed:
+            log.info("Аудиенция: отказал %s (отношение %d < %d)", requester, attitude, cfg.audience_min_attitude)
+            return f"🚫 Не заслужил аудиенции (отношение {attitude:+d}, нужно от {cfg.audience_min_attitude:+d})."
+        if listener is None:
+            return "⚠️ Голосовой модуль не загружен."
+        await listener.start(channel)  # type: ignore[attr-defined]
+        return f"🎙️ Зашёл в «{channel.name}» и слушаю."
+
+    async def _timer(self, requester: discord.Member, a: dict, channel: discord.abc.Messageable | None) -> str | None:
+        try:
+            seconds = int(float(a.get("seconds") or 0)) or int(float(a.get("minutes") or 0) * 60)
+        except (TypeError, ValueError):
+            return None
+        if seconds < 5:
+            return None
+        seconds = min(seconds, 30 * 24 * 3600)
+        what = str(a.get("text") or "").strip()[:500]
+        text = "⏱️ Время вышло!" + (f" {what}" if what else "") + f" (засекал {format_seconds(seconds)})"
+        try:
+            await self.app.reminders.create(requester.id, text, utcnow() + timedelta(seconds=seconds),
+                                            requester.guild.id, getattr(channel, "id", None))
+        except ValueError as exc:
+            return f"⚠️ {exc}"
+        return f"⏱️ Засёк {format_seconds(seconds)} — тегну {requester.mention}, когда выйдет."
 
     async def _relay_dm(self, requester: discord.Member, a: dict, cfg: ChatterConfig) -> str | None:
         """Передаёт сообщение в личку участнику сервера по чьей-то просьбе."""

@@ -499,6 +499,8 @@ class ChatterConfig(Strict):
     control_kick_ban: bool = True  # кикать и банить по своему решению
     kick_ban_per_hour: int = Field(3, ge=1, le=30)  # не больше на сервер в час — защита от безумия модели
     character_ignore: bool = True  # может игнорить людей, которые его достали
+    # Аудиенция: позвать бота в голосовой канал. Свои — всегда; остальные — если он к ним относится не хуже порога
+    audience_min_attitude: int = Field(15, ge=-100, le=100)
     # Доверенные: личная переписка с ботом и его доклады в ЛС
     confidants: list[Snowflake] = Field(default_factory=list, max_length=10)
     confidant_dm_chat: bool = True

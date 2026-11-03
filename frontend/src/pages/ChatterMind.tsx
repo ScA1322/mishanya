@@ -12,7 +12,7 @@ export interface MindConfig {
   apology_channel_id: string | null; punish_exempt_roles: string[];
   move_enabled: boolean; move_others_requires_permission: boolean;
   control_music: boolean; control_moderation: boolean; control_roles: boolean;
-  control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean;
+  control_kick_ban: boolean; kick_ban_per_hour: number; character_ignore: boolean; audience_min_attitude: number;
   relay_dm: boolean; relay_per_hour: number; relay_anonymous: boolean;
   family: { user_id: string | null; username: string; title: string; prompt: string }[];
   confidants: string[]; confidant_dm_chat: boolean; dm_open: boolean; dm_max_per_hour: number;
@@ -332,6 +332,9 @@ export function CharacterCard<C extends MindConfig>({ guildId, d, set }: { guild
   return (
     <Card title="Характер" subtitle="У бота своё отношение к каждому человеку: кого-то он любит, кого-то презирает. Если его достают или спамят, он может послать и начать игнорить — тогда его внимание придётся добиваться.">
       <ToggleRow title="Может игнорить людей" checked={d.character_ignore} onChange={(v) => set("character_ignore", v)} />
+      <Field label="Аудиенция: звать в войс можно с отношения" hint="Отношение копится от −100 до +100. Своих (доверенных и семью) бот слушается всегда; остальным ниже порога отказывает и язвит. Команда /audience или «император, зайди в войс»">
+        <NumberInput value={d.audience_min_attitude} min={-100} max={100} onChange={(v) => set("audience_min_attitude", v)} />
+      </Field>
       <h3 className="mt">Отношение к людям</h3>
       {rows.length ? (
         <div className="stack" style={{ gap: 6 }}>

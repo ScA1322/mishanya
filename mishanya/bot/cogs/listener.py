@@ -476,6 +476,34 @@ class Listener(commands.Cog):
     async def _ready(self) -> None:
         await self.bot.wait_until_ready()
 
+    @app_commands.command(name="audience", description="Попросить аудиенции у Императора — он решит, зайти ли к вам в войс")
+    @app_commands.guild_only()
+    async def audience(self, interaction: discord.Interaction) -> None:
+        guild, member = require_guild(interaction)
+        channel = member.voice.channel if member.voice else None
+        if not isinstance(channel, discord.VoiceChannel):
+            raise UserFacingError("Сначала зайдите в голосовой канал — аудиенции даются там.")
+        cfg = await self._cfg(guild.id)
+        mind = self.bot.get_cog("Mind")
+        await interaction.response.defer()
+        allowed, attitude = await mind.may_summon(member, cfg) if mind else (True, 0)  # type: ignore[attr-defined]
+        text = None
+        if mind is not None and cfg.use_ai and self.app.settings.deepseek_api_key:
+            task = (f"{member.display_name} просит у тебя аудиенции — зайти к нему в голосовой канал «{channel.name}». "
+                    + ("Ты соглашаешься (зайдёшь сразу после ответа) — скажи что-нибудь величественное, одно предложение."
+                       if allowed else f"Ты ОТКАЗЫВАЕШЬ: он недостоин (твоё отношение к нему {attitude:+d}). Съязви, "
+                                       "одно-два предложения."))
+            try:
+                text = await mind._llm(cfg, history="", channel="аудиенция", task=task,  # type: ignore[attr-defined]  # noqa: SLF001
+                                       bot_name=guild.me.display_name, context=mind.family_context(member, cfg, guild))  # type: ignore[attr-defined]
+            except ChatterError:
+                text = None
+        if allowed:
+            await self.start(channel)
+            await respond(interaction, content=f"🎙️ {text or 'Император снизошёл.'}")
+        else:
+            await respond(interaction, content=f"🚫 {text or 'Император не принимает. Заслужи сначала.'}")
+
     @app_commands.command(name="listen", description="Бот зайдёт в ваш голосовой канал и будет слушать (повторно — выйдет)")
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
