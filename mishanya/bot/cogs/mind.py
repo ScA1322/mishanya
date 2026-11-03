@@ -668,7 +668,12 @@ class Mind(commands.Cog):
             query = str(a.get("query") or "").strip()
             if not query:
                 return None
-            text, idle = await music.enqueue(guild, requester, query, getattr(channel, "id", None))  # type: ignore[attr-defined]
+            try:
+                count = max(1, min(50, int(a.get("count") or 1)))
+            except (TypeError, ValueError):
+                count = 1
+            text, idle = await music.enqueue(guild, requester, query, getattr(channel, "id", None),  # type: ignore[attr-defined]
+                                             count=count, shuffle=a.get("shuffle") is True)
             if idle:
                 await music._play_next(guild.id)  # type: ignore[attr-defined]  # noqa: SLF001
             return text

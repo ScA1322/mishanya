@@ -101,8 +101,11 @@ ACTIONS_FORMAT = (
     "например вырубить надоевшую музыку или замутить надоеду. Если делаешь — обязательно добавь действие, иначе "
     "ничего не произойдёт. Не пиши в reply, что сделал, если не добавил действие. Список (who — имя участника или "
     "«я» про автора сообщения):\n"
-    '{"type": "music", "do": "play|pause|resume|skip|stop|leave|shuffle|loop|volume", "query": "что включить '
-    '(для play)", "volume": 1-200 (для volume)}\n'
+    '{"type": "music", "do": "play|pause|resume|skip|stop|leave|shuffle|loop|volume", "query": "для play — '
+    'КОРОТКИЙ поисковый запрос: исполнитель и/или трек, как в поиске SoundCloud (например «MORGENSHTERN» или '
+    '«MORGENSHTERN Cadillac»), без слов «плейлист», «в духе», «рандом»", "count": 1, "shuffle": false, '
+    '"volume": 1-200 (для volume)}. count — сколько треков поставить: 1 — один трек; просят плейлист, подборку, '
+    '«на несколько часов» — 30–50 и shuffle: true\n'
     '{"type": "move", "who": "…", "to": "голосовой канал"}\n'
     '{"type": "disconnect", "who": "…"} — выкинуть из голосового канала\n'
     '{"type": "voice_mute", "who": "…", "on": true/false} — выключить или вернуть микрофон в войсе\n'

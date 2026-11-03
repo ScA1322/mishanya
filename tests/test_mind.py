@@ -546,3 +546,11 @@ def test_memory_migration_adds_hash(tmp_path):
         _m7_memory_index(conn)  # повторный запуск ничего не ломает
         norm = conn.exec_driver_sql("SELECT norm FROM bot_memory").scalar()
     assert len(norm) == 40
+
+
+def test_music_query_cleanup():
+    from mishanya.services.music import classify_query, simplify_query
+
+    assert simplify_query("вруби рандом плейлист с MORGENSHTERN на несколько часов") == "MORGENSHTERN"
+    assert simplify_query("MORGENSHTERN Cadillac") == "MORGENSHTERN Cadillac"
+    assert classify_query("MORGENSHTERN", 30) == "scsearch30:MORGENSHTERN"

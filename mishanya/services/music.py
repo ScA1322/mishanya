@@ -84,8 +84,8 @@ def ffmpeg_executable() -> str:
     return exe
 
 
-def classify_query(query: str) -> str:
-    """Возвращает строку для yt-dlp: ссылку SoundCloud или поиск по SoundCloud."""
+def classify_query(query: str, count: int = 1) -> str:
+    """Возвращает строку для yt-dlp: ссылку SoundCloud или поиск по SoundCloud (count — сколько результатов)."""
     query = query.strip()
     if not query:
         raise MusicError("Укажите название трека или ссылку на SoundCloud.")
@@ -95,7 +95,20 @@ def classify_query(query: str) -> str:
             raise MusicError("Поддерживаются только ссылки SoundCloud (soundcloud.com). "
                              "Или просто напишите название трека.")
         return query.split("?")[0] if host != "on.soundcloud.com" else query
-    return f"scsearch1:{query[:200]}"
+    return f"scsearch{max(1, min(count, MAX_PLAYLIST))}:{query[:200]}"
+
+
+# Слова, которые люди (и ИИ) добавляют к запросу, а SoundCloud из-за них ничего не находит.
+FILLER_RE = re.compile(r"\b(плейлист\w*|подборк\w*|рандом\w*|случайн\w*|в духе|типа|по типу|что[- ]то|треки|трек|"
+                       r"песн\w*|музык\w*|музло|похож\w*|включи|вруби|поставь|на несколько часов|часа?|playlist|mix|"
+                       r"random|songs?|tracks?|like)\b", re.I)
+
+
+def simplify_query(query: str) -> str:
+    """«рандом плейлист с моргеном на несколько часов» → «моргеном»: оставляем только суть."""
+    q = FILLER_RE.sub(" ", query)
+    q = re.sub(r"\b(с|со|из|от|для|и|в|на|по)\b", " ", q, flags=re.I)
+    return " ".join(q.split())
 
 
 def _track_from_info(info: dict, requester_id: int) -> Track:
@@ -124,19 +137,28 @@ def _extract(target: str, flat: bool) -> dict:
         raise MusicError(f"SoundCloud не отдал трек: {msg[:200]}") from None
 
 
-async def search(query: str, requester_id: int) -> list[Track]:
-    """Находит трек или плейлист SoundCloud. Ссылки на поток не сохраняются — они быстро устаревают."""
-    target = classify_query(query)
-    info = await asyncio.to_thread(_extract, target, True)
-    entries = info.get("entries")
-    if entries is None:
-        tracks = [_track_from_info(info, requester_id)]
-    else:
-        tracks = [_track_from_info(e, requester_id) for e in entries if e and (e.get("url") or e.get("webpage_url"))]
-    tracks = [t for t in tracks if t.page_url]
-    if not tracks:
-        raise MusicError("Ничего не найдено на SoundCloud.")
-    return tracks
+async def search(query: str, requester_id: int, count: int = 1) -> list[Track]:
+    """Находит трек, плейлист или подборку (count > 1) на SoundCloud. Если по длинному запросу пусто —
+    пробует упрощённый. Ссылки на поток не сохраняются — они быстро устаревают."""
+    attempts = [query]
+    if not URL_RE.match(query.strip()):
+        simple = simplify_query(query)
+        if simple and simple.lower() != query.strip().lower():
+            attempts.insert(0, simple)  # сначала суть без «плейлист», «рандом» и т. п. — иначе находится мусор
+        words = simple.split()
+        if len(words) > 2:
+            attempts.append(" ".join(words[:2]))
+    for q in attempts:
+        info = await asyncio.to_thread(_extract, classify_query(q, count), True)
+        entries = info.get("entries")
+        if entries is None:
+            tracks = [_track_from_info(info, requester_id)]
+        else:
+            tracks = [_track_from_info(e, requester_id) for e in entries if e and (e.get("url") or e.get("webpage_url"))]
+        tracks = [t for t in tracks if t.page_url]
+        if tracks:
+            return tracks
+    raise MusicError("Ничего не найдено на SoundCloud.")
 
 
 async def resolve_stream(track: Track) -> tuple[str, dict]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import logging
 import re
 import time
@@ -42,6 +43,7 @@ class GuildPlayer:
         self.idle_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
         self.np_message: discord.Message | None = None  # сообщение «Сейчас играет» с кнопками
+        self.last_action: str | None = None  # что последним сделали с плеером — видно всем под треком
 
     def cancel_idle(self) -> None:
         if self.idle_task is not None and not self.idle_task.done():
@@ -76,7 +78,18 @@ def np_embed(player: GuildPlayer, paused: bool) -> discord.Embed:
     if player.queue.tracks:
         parts.append(f"в очереди: {len(player.queue.tracks)}")
     embed.set_footer(text=" · ".join(parts))
+    if player.last_action:
+        embed.add_field(name="\u200b", value=player.last_action, inline=False)
+    if player.queue.tracks:
+        nxt = "\n".join(f"`{i}.` {t.title[:60]}" for i, t in enumerate(player.queue.tracks[:3], 1))
+        embed.add_field(name="Дальше", value=nxt, inline=False)
     return embed
+
+
+ACTION_DONE = {
+    "pause": "⏸️ {by} поставил на паузу", "resume": "▶️ {by} продолжил", "shuffle": "🔀 {by} перемешал очередь",
+    "loop": "🔁 {by} сменил повтор", "voldown": "🔉 {by} убавил громкость", "volup": "🔊 {by} прибавил громкость",
+}
 
 
 class MusicControl(discord.ui.DynamicItem[discord.ui.Button],
@@ -456,6 +469,8 @@ class Music(commands.Cog):
             action = "resume" if vc.is_paused() else "pause"
         if player is not None and interaction.message is not None and player.np_message is None:
             player.np_message = interaction.message  # кнопки старого сообщения после перезапуска бота
+        if player is not None:  # кто что нажал — видно всем под треком
+            player.last_action = ACTION_DONE.get(action, "").format(by=member.display_name) or None
         await self.control(guild.id, action, by=member.display_name)
         if not interaction.response.is_done():
             await interaction.response.defer()
@@ -539,7 +554,7 @@ class Music(commands.Cog):
             await self._play_next(guild.id)
 
     async def enqueue(self, guild: discord.Guild, member: discord.Member, query: str,
-                      text_channel_id: int | None) -> tuple[str, bool]:
+                      text_channel_id: int | None, count: int = 1, shuffle: bool = False) -> tuple[str, bool]:
         """Ищет и ставит в очередь трек от имени участника. Возвращает (текст для чата, надо ли запускать)."""
         cfg = await self._check_enabled(guild)
         if not voice_available():
@@ -547,7 +562,9 @@ class Music(commands.Cog):
         if member.voice is None or member.voice.channel is None:
             raise UserFacingError("Сначала зайдите в голосовой канал.")
         try:
-            tracks = await search(query, member.id)
+            tracks = await search(query, member.id, count)
+            if shuffle:
+                random.shuffle(tracks)
         except MusicError as exc:
             raise UserFacingError(str(exc)) from None
         if cfg.max_track_minutes:
