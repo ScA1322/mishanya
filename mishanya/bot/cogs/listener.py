@@ -32,7 +32,9 @@ log = logging.getLogger(__name__)
 OPUS_SILENCE = b"\xf8\xff\xfe"
 DAVE_MAGIC = b"\xfa\xfa"  # маркер в конце кадра, зашифрованного DAVE
 ALONE_LEAVE_SECONDS = 60
-MAX_PARALLEL_STT = 2
+MAX_PARALLEL_STT = 5
+STALE_SECONDS = 12  # фраза ждала распознавания дольше — пропускаем: отвечать на старое бессмысленно
+FRAME = 3840  # 20 мс стерео 48 кГц, 16 бит
 
 try:
     from discord.ext import voice_recv
@@ -102,10 +104,62 @@ class Session:
     open_until: float = 0.0  # до этого момента отвечаем без слова-обращения
     alone_since: float | None = None
     replying: bool = False
+    pending: tuple | None = None  # обращение, пришедшее, пока бот говорил: (участник, как обратились)
+    last_decided: float = 0.0  # когда бот последний раз решал, влезать ли в разговор
     last_spoke: float = 0.0  # когда бот последний раз говорил
     heard_since: int = 0  # реплик людей с тех пор
     task: asyncio.Task | None = None
     error: str | None = None
+
+
+class DuckingMixer(discord.AudioSource):
+    """Голос бота поверх музыки: на время речи музыка приглушается, звуки смешиваются. Подменяет источник плеера."""
+
+    def __init__(self, music: discord.AudioSource, duck: float = 0.3):
+        import threading
+
+        self.music, self.duck = music, duck
+        self.frames: deque[bytes] = deque()
+        self.drained = threading.Event()
+
+    def add(self, pcm: bytes) -> None:
+        self.drained.clear()
+        for i in range(0, len(pcm), FRAME):
+            chunk = pcm[i:i + FRAME]
+            self.frames.append(chunk + b"\0" * (FRAME - len(chunk)))
+
+    def read(self) -> bytes:
+        from ...services.stt import audioop
+
+        m = self.music.read()
+        if not self.frames:
+            self.drained.set()
+            return m
+        t = self.frames.popleft()
+        if not self.frames:
+            self.drained.set()
+        if not m or audioop is None:
+            return t
+        m = m[:FRAME] + b"\0" * (FRAME - len(m))
+        return audioop.add(audioop.mul(m, 2, self.duck), t, 2)
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self) -> None:
+        self.music.cleanup()
+
+
+async def decode_pcm(data: bytes, opts: str) -> bytes:
+    """MP3 → PCM 48 кГц стерео (как ждёт Discord), с теми же фильтрами, что при обычном воспроизведении."""
+    import shlex
+
+    filters = shlex.split(opts)
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg_executable(), "-loglevel", "error", "-i", "pipe:0", *filters, "-f", "s16le", "-ar", "48000", "-ac", "2",
+        "pipe:1", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    out, _ = await proc.communicate(data)
+    return out
 
 
 class Listener(commands.Cog):
@@ -224,14 +278,15 @@ class Listener(commands.Cog):
                     session.alone_since = None
                 for user_id, pcm, seconds in session.collector.pop_finished(now):
                     if seconds >= cfg.listen_min_seconds:
-                        self._bg(self._handle(guild_id, user_id, pcm, cfg))
+                        self._bg(self._handle(guild_id, user_id, pcm, cfg, now))
         except asyncio.CancelledError:
             pass
         except Exception:  # noqa: BLE001
             log.exception("Слушание: ошибка цикла")
             await self.stop(guild_id, "ошибка")
 
-    async def _handle(self, guild_id: int, user_id: int, pcm: bytes, cfg: ChatterConfig) -> None:
+    async def _handle(self, guild_id: int, user_id: int, pcm: bytes, cfg: ChatterConfig,
+                      queued: float | None = None) -> None:
         session = self.sessions.get(guild_id)
         guild = self.bot.get_guild(guild_id)
         if session is None or guild is None:
@@ -242,6 +297,9 @@ class Listener(commands.Cog):
         t0 = time.monotonic()
         try:
             async with self.stt_sem:
+                if queued is not None and time.monotonic() - queued > STALE_SECONDS:
+                    log.debug("Слушание: пропускаю фразу — ждала распознавания %.0f с", time.monotonic() - queued)
+                    return
                 wav = await asyncio.to_thread(pcm_to_wav, pcm)
                 text = await transcribe(wav, api_key=s.stt_key, base_url=s.stt_url, model=s.stt_model)
         except SttError as exc:
@@ -251,39 +309,57 @@ class Listener(commands.Cog):
         session.error = None
         if not text:
             return
-        low = text.lower()
         now = time.monotonic()
-        addressed = any(w in low for w in cfg.listen_wake_words) or now < session.open_until
+        mind = self.bot.get_cog("Mind")
+        how = mind.address(text, member, cfg) if mind is not None else (  # type: ignore[attr-defined]
+            "wake" if any(w in text.lower() for w in cfg.listen_wake_words) else None)
+        addressed = how is not None or now < session.open_until
         session.recent.append((time.time(), name, text, addressed))
         session.dialog.append((name, text))
         session.heard_since += 1
-        log.debug("Слушание: распознано за %.1f с: %s", time.monotonic() - t0, text[:100])
-        mind = self.bot.get_cog("Mind")
+        log.info("Слушание: %s (распознано за %.1f с): %s", name, time.monotonic() - t0, text[:150])
         if mind is not None:
             mind.heard_speech(guild, session.vc.channel, user_id, name, text)  # type: ignore[attr-defined]
             for game in await mind.check_triggers(guild, text, cfg):  # type: ignore[attr-defined]
                 session.recent.append((time.time(), "▶", f"запустил {game}", False))
-        interject = (not addressed and session.heard_since >= 2 and cfg.listen_interject_percent > 0
-                     and now - session.last_spoke >= cfg.listen_interject_seconds
-                     and random.random() * 100 < cfg.listen_interject_percent)
-        if (addressed or interject) and not session.replying:
-            if addressed:
-                log.info("Слушание: обращение от %s: %s", name, text[:200])
-            session.replying = True
-            try:
-                spoke = await self._reply(guild, session, cfg, member, interject=not addressed)
-            finally:
-                session.replying = False
-            if spoke:
-                session.last_spoke, session.heard_since = time.monotonic(), 0
-                session.open_until = time.monotonic() + cfg.listen_followup_seconds
+        quiet = now - max(session.last_spoke, session.last_decided) >= cfg.listen_interject_seconds
+        if cfg.listen_interject_mode == "ai":
+            interject = not addressed and quiet  # сам решит, есть ли что сказать (может промолчать)
+        elif cfg.listen_interject_mode == "chance":
+            interject = (not addressed and session.heard_since >= 2 and quiet
+                         and random.random() * 100 < cfg.listen_interject_percent)
+        else:
+            interject = False
+        if addressed:
+            log.info("Слушание: обращение от %s: %s", name, text[:200])
+        if session.replying:
+            if addressed:  # говорит — ответит сразу после, не потеряем
+                session.pending = (member, how)
+            return
+        if not (addressed or interject):
+            return
+        session.replying = True
+        try:
+            todo: tuple | None = (member, how, not addressed)
+            while todo is not None:
+                who, kind, inter = todo
+                if inter:
+                    session.last_decided = time.monotonic()
+                spoke = await self._reply(guild, session, cfg, who, interject=inter, how=kind)
+                if spoke:
+                    session.last_spoke, session.heard_since = time.monotonic(), 0
+                    session.open_until = time.monotonic() + cfg.listen_followup_seconds
+                todo = (*session.pending, False) if session.pending else None
+                session.pending = None
+        finally:
+            session.replying = False
 
     async def _reply(self, guild: discord.Guild, session: Session, cfg: ChatterConfig,
-                     member: discord.Member | None = None, interject: bool = False) -> bool:
-        """Отвечает голосом. Возвращает, сказал ли что-нибудь."""
+                     member: discord.Member | None = None, interject: bool = False, how: str | None = None) -> bool:
+        """Отвечает голосом (поверх музыки, если она играет). Возвращает, сказал ли что-нибудь."""
         vc = session.vc
-        if not vc.is_connected() or vc.is_playing():
-            return False  # играет музыка — не перебиваем
+        if not vc.is_connected():
+            return False
         t0 = time.monotonic()
         s = self.app.settings
         me = guild.me.display_name
@@ -294,9 +370,11 @@ class Listener(commands.Cog):
             people = ", ".join(m.display_name for m in vc.channel.members if not m.bot)
             task = (f"Ты сидишь в голосовом канале «{vc.channel.name}» (там: {people}) и слышишь разговор — это "
                     "расшифровка речи, в ней бывают ошибки распознавания. "
-                    + ("К тебе никто не обращался — влезь в разговор своей репликой по теме, если есть что сказать "
-                       "смешного или дерзкого; если сказать нечего — оставь reply пустым. " if interject else
+                    + ("К тебе прямо не обращались. Реши сам: если последняя реплика всё-таки тебе (по смыслу), "
+                       "или тебе реально интересно, или есть что сказать смешного и дерзкого — скажи. Если нет — "
+                       "оставь reply пустым, молчать нормально, не влезай ради галочки. " if interject else
                        "Последняя реплика обращена к тебе — ответь на неё. ")
+                    + (self.bot.get_cog("Mind").alias_scold(cfg) + " " if how == "alias_bad" else "")  # type: ignore[union-attr]
                     + "Говори вслух 1–2 короткими фразами (до 200 символов) — ответ озвучивается голосом, поэтому "
                     "без смайликов, разметки и ссылок.")
             mind = self.bot.get_cog("Mind")
@@ -341,10 +419,24 @@ class Listener(commands.Cog):
             if i == 0:
                 log.info("Слушание: ответ за %.1f с (ИИ %.1f с, озвучка %.1f с)", time.monotonic() - t0,
                          t_ai - t0, time.monotonic() - t_ai)
-            if not vc.is_connected() or (vc.is_playing() and not spoke):
+            if not vc.is_connected():
                 break
-            done = asyncio.Event()
             opts = ffmpeg_options(engine, cfg.voice_rate)
+            if vc.is_playing():
+                # Играет музыка: говорим поверх неё, приглушив на время речи.
+                pcm = await decode_pcm(data, opts)
+                if not pcm or not vc.is_playing():
+                    continue
+                mixer = vc.source if isinstance(vc.source, DuckingMixer) else DuckingMixer(vc.source)
+                mixer.add(pcm)
+                if vc.source is not mixer:
+                    vc.source = mixer
+                spoke = True
+                await asyncio.to_thread(mixer.drained.wait, 60)
+                if vc.is_playing() and vc.source is mixer:
+                    vc.source = mixer.music
+                continue
+            done = asyncio.Event()
             source = await asyncio.to_thread(lambda d=data, o=opts: discord.FFmpegPCMAudio(
                 io.BytesIO(d), pipe=True, executable=ffmpeg_executable(), options=o))
             vc.play(source, after=lambda _e: loop.call_soon_threadsafe(done.set))

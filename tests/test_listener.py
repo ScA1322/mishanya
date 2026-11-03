@@ -164,7 +164,7 @@ async def test_wake_word_and_followup(monkeypatch):
     cog.stt_sem = L.asyncio.Semaphore(2)
     session = L.Session(vc=vc, channel_id=10, started=0, collector=L.UtteranceCollector())
     cog.sessions = {1: session}
-    cfg = ChatterConfig(enabled=True, listen_followup_seconds=30)
+    cfg = ChatterConfig(enabled=True, listen_followup_seconds=30, listen_interject_mode="off")
 
     await cog._handle(1, 5, b"pcm", cfg)  # без обращения — молчит
     assert replies == [] and played == []
@@ -176,3 +176,38 @@ async def test_wake_word_and_followup(monkeypatch):
     await cog._handle(1, 5, b"pcm", cfg)
     assert len(played) == 2
     assert [r[3] for r in session.recent if r[1] == "Вася"] == [False, True, True, False]
+
+
+def test_ducking_mixer_mixes_voice_over_music():
+    from mishanya.bot.cogs.listener import FRAME, DuckingMixer
+
+    class Music:
+        def read(self):
+            return frame(8000)
+
+        def cleanup(self):
+            pass
+
+    mixer = DuckingMixer(Music(), duck=0.3)
+    assert mixer.read() == frame(8000)  # пока бот молчит — чистая музыка
+    mixer.add(frame(4000) * 2)
+    out = mixer.read()
+    assert len(out) == FRAME and out != frame(8000) and not mixer.drained.is_set()
+    mixer.read()
+    assert mixer.drained.is_set() and mixer.read() == frame(8000)
+
+
+def test_address_kinds():
+    """Полное имя — для всех; короткое «Импер» — только свои, чужим — повод отчитать."""
+    from mishanya.bot.cogs.mind import Mind
+    from mishanya.schemas import ChatterConfig
+
+    cog = Mind.__new__(Mind)
+    cog.app = SimpleNamespace(settings=SimpleNamespace(owner_id=None))
+    cfg = ChatterConfig(confidants=["999999999999999999"])
+    friend = SimpleNamespace(id=999999999999999999, name="boss")
+    stranger = SimpleNamespace(id=5, name="vasya")
+    assert cog.address("император, включи музыку", stranger, cfg) == "wake"
+    assert cog.address("Импер, включи музыку", friend, cfg) == "alias"
+    assert cog.address("импер, включи", stranger, cfg) == "alias_bad"
+    assert cog.address("империя наносит ответный удар", friend, cfg) is None

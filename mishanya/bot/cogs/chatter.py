@@ -110,6 +110,9 @@ class Chatter(commands.Cog):
         if isinstance(ref, discord.Message) and ref.author.id == me.id:
             return True
         if cfg.wake_words_in_text:
+            mind = self.bot.get_cog("Mind")
+            if mind is not None:
+                return mind.address(message.content, message.author, cfg) is not None  # type: ignore[attr-defined]
             low = message.content.lower()
             return any(w in low for w in cfg.listen_wake_words)
         return False
@@ -159,6 +162,8 @@ class Chatter(commands.Cog):
                     "Ты только что разговаривал с автором последнего сообщения. Если оно продолжает разговор с тобой — "
                     "ответь; если он явно говорит не с тобой — оставь reply пустым.")
             task += " Это живой диалог: отвечай по сути и не повторяйся; если просят подробнее — можно длиннее."
+            if mind.address(message.content, message.author, cfg) == "alias_bad":  # type: ignore[attr-defined]
+                task += " " + mind.alias_scold(cfg)  # type: ignore[attr-defined]
             try:
                 async with channel.typing():
                     return await mind.brain(channel.guild, message.author, cfg,  # type: ignore[attr-defined]

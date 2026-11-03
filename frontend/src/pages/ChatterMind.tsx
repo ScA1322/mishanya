@@ -21,6 +21,7 @@ export interface MindConfig {
   report_inactive_days: number; gossip_hours: number;
   voice_triggers: VoiceTrigger[]; trigger_cooldown_minutes: number;
   listen_wake_words: string[]; listen_interject_percent: number; listen_interject_seconds: number;
+  listen_interject_mode: "ai" | "chance" | "off"; trusted_aliases: string[];
 }
 type Setter<C> = <K extends keyof C>(k: K, v: C[K]) => void;
 

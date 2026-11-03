@@ -466,8 +466,12 @@ class ChatterConfig(Strict):
     listen_min_seconds: float = Field(0.6, ge=0.2, le=5)  # короче — не распознаём (кашель, «ага»)
     listen_max_minutes: int = Field(60, ge=5, le=600)  # потом выходит, чтобы не тратить деньги впустую
     listen_auto: bool = False  # сам садиться в голосовой канал, где больше всего людей
-    listen_interject_percent: int = Field(25, ge=0, le=100)  # шанс влезть в разговор без обращения
-    listen_interject_seconds: int = Field(45, ge=10, le=3600)  # не чаще, чем раз во столько секунд
+    # Влезать в голосовой разговор без обращения: ai — сам решает, есть ли что сказать; chance — по шансу; off — нет
+    listen_interject_mode: Literal["ai", "chance", "off"] = "ai"
+    listen_interject_percent: int = Field(25, ge=0, le=100)  # шанс для режима chance
+    listen_interject_seconds: int = Field(8, ge=3, le=3600)  # не чаще, чем раз во столько секунд
+    # Короткие имена, на которые бот откликается только от своих (доверенных и семьи); чужих за них отчитывает
+    trusted_aliases: list[str] = Field(default_factory=lambda: ["импер"], max_length=20)
     # Диалог в чате
     wake_words_in_text: bool = True  # слова-обращения работают и в тексте («император, ты где?»)
     dialog_seconds: int = Field(120, ge=0, le=900)  # после ответа продолжает разговор с этим человеком без обращения
@@ -528,6 +532,11 @@ class ChatterConfig(Strict):
     @classmethod
     def _dedupe_ids(cls, v: list[str]) -> list[str]:
         return _dedupe(v)
+
+    @field_validator("trusted_aliases")
+    @classmethod
+    def _aliases(cls, v: list[str]) -> list[str]:
+        return [w.strip().lower()[:30] for w in v if w.strip()]
 
     @field_validator("listen_wake_words")
     @classmethod

@@ -330,6 +330,25 @@ class Mind(commands.Cog):
                 return f
         return None
 
+    def address(self, text: str, user: discord.abc.User | None, cfg: ChatterConfig) -> str | None:
+        """Как обратились к боту: wake — полным именем, alias — коротким именем от своего, alias_bad — коротким
+        именем от чужого (за это бот отчитывает), None — не обращались."""
+        low = text.lower()
+        if any(w in low for w in cfg.listen_wake_words):
+            return "wake"
+        for alias in cfg.trusted_aliases:
+            if re.search(rf"(?<![\w]){re.escape(alias)}(?![\w])", low):
+                trusted = user is not None and self.is_trusted(user.id, cfg, user)
+                return "alias" if trusted else "alias_bad"
+        return None
+
+    @staticmethod
+    def alias_scold(cfg: ChatterConfig) -> str:
+        names = ", ".join(f"«{a.capitalize()}»" for a in cfg.trusted_aliases) or "по-свойски"
+        full = cfg.listen_wake_words[0].capitalize() if cfg.listen_wake_words else "Император"
+        return (f"Автор назвал тебя {names} — так тебя могут звать только свои (доверенные и семья), а он чужой. "
+                f"Жёстко поставь его на место за фамильярность: для него ты только «{full}».")
+
     def is_trusted(self, user_id: int, cfg: ChatterConfig, user: discord.abc.User | None = None) -> bool:
         """Доверенный человек, член семьи или владелец бота (OWNER_ID в .env)."""
         return str(user_id) in cfg.confidants or user_id == self.app.settings.owner_id or \

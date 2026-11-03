@@ -313,10 +313,22 @@ function ListenCard({ guildId, d, set }: {
         <Field label="Выйти через, минут"><NumberInput value={d.listen_max_minutes} min={5} max={600} onChange={(v) => set("listen_max_minutes", v)} /></Field>
       </div>
       <div className="grid grid-2 mt">
-        <Field label={`Влезать в разговор без обращения: ${d.listen_interject_percent}%`} hint="Шанс после каждой реплики людей. 0 — только когда к нему обращаются">
-          <input type="range" min={0} max={100} step={5} value={d.listen_interject_percent} onChange={(e) => set("listen_interject_percent", Number(e.target.value))} />
+        <Field label="Влезать в разговор без обращения" hint="«Сам решает» — бот слушает весь разговор и говорит, когда ему интересно, есть что сказать или реплика по смыслу ему (даже без слова «император»)">
+          <select className="select" value={d.listen_interject_mode} onChange={(e) => set("listen_interject_mode", e.target.value as ChatterConfig["listen_interject_mode"])}>
+            <option value="ai">Сам решает, когда влезть (рекомендуется)</option>
+            <option value="chance">Случайно, с заданным шансом</option>
+            <option value="off">Только когда к нему обращаются</option>
+          </select>
         </Field>
-        <Field label="Влезать не чаще, чем раз в, сек"><NumberInput value={d.listen_interject_seconds} min={10} max={3600} onChange={(v) => set("listen_interject_seconds", v)} /></Field>
+        <Field label="Обдумывать не чаще, чем раз в, сек" hint="Меньше — живее, но дороже"><NumberInput value={d.listen_interject_seconds} min={3} max={3600} onChange={(v) => set("listen_interject_seconds", v)} /></Field>
+        {d.listen_interject_mode === "chance" && (
+          <Field label={`Шанс влезть: ${d.listen_interject_percent}%`}>
+            <input type="range" min={0} max={100} step={5} value={d.listen_interject_percent} onChange={(e) => set("listen_interject_percent", Number(e.target.value))} />
+          </Field>
+        )}
+        <Field label="Короткие имена — только для своих" hint="Через запятую. Доверенным и семье бот откликается и на них; чужих, кто так его назовёт, жёстко ставит на место. Работает в чате и в голосе">
+          <input className="input" defaultValue={d.trusted_aliases.join(", ")} onBlur={(e) => set("trusted_aliases", e.target.value.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean))} />
+        </Field>
       </div>
       <ToggleRow title="Самому садиться слушать" hint="Если бот не в голосе, он сам зайдёт в канал, где больше всего людей (с учётом списка каналов и минимума людей выше)"
         checked={d.listen_auto} onChange={(v) => set("listen_auto", v)} />
