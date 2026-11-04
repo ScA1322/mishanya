@@ -277,7 +277,7 @@ async def test_waits_for_pause_and_stops_when_interrupted(monkeypatch):
 
     # 1) человек продолжил мысль, пока бот ждал паузу — старый ответ выброшен
     session = L.Session(vc=vc, channel_id=1, started=0, collector=L.UtteranceCollector())
-    session.pending = (None, "wake", 0.0)
+    session.pending = (None, "wake", 1.0)  # договорил уже после того, на что бот собирался ответить
     q: L.asyncio.Queue = L.asyncio.Queue()
     q.put_nowait(("Ответ.", L.asyncio.ensure_future(job())))
     q.put_nowait(None)
@@ -295,3 +295,27 @@ async def test_waits_for_pause_and_stops_when_interrupted(monkeypatch):
         session.collector.feed(5, frame(8000), L.time.monotonic())
     assert await L.asyncio.wait_for(task, 2) is True and stopped == [1] and len(played) == 1
     assert session.unsaid == "Первая мысль. Вторая мысль."  # запомнил, что не договорил
+
+
+async def test_never_stuck_after_interruptions(monkeypatch):
+    """Обращение, пришедшее во время ответа, не теряется и не «залипает»: бот отвечает на него, флаг говорения снят."""
+    from mishanya.bot.cogs import listener as L
+    from mishanya.schemas import ChatterConfig
+
+    answered = []
+
+    async def fake_reply(guild, session, cfg, member=None, interject=False, how=None):  # noqa: ANN001
+        answered.append(how)
+        if len(answered) == 1:  # пока отвечал на первое — пришло второе обращение
+            session.pending = (None, "second", L.time.monotonic())
+        if how == "boom":
+            raise RuntimeError("сбой ответа")
+        return True
+
+    cog = L.Listener.__new__(L.Listener)
+    monkeypatch.setattr(cog, "_reply", fake_reply)
+    session = L.Session(vc=SimpleNamespace(), channel_id=1, started=0, collector=L.UtteranceCollector())
+    await cog._speak_turns(None, session, ChatterConfig(), (None, "first", L.time.monotonic(), False))
+    assert answered == ["first", "second"] and session.pending is None and session.replying is False
+    await cog._speak_turns(None, session, ChatterConfig(), (None, "boom", L.time.monotonic(), False))
+    assert session.replying is False  # даже после ошибки бот продолжит слушать и отвечать

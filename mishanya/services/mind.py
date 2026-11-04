@@ -116,13 +116,15 @@ ACTIONS_FORMAT = (
     'КОРОТКИЙ поисковый запрос: исполнитель и/или трек, как в поиске SoundCloud (например «MORGENSHTERN» или '
     '«MORGENSHTERN Cadillac»), без слов «плейлист», «в духе», «рандом»", "count": 1, "shuffle": false, '
     '"volume": 1-200 (для volume)}. count — сколько треков поставить: 1 — один трек; просят плейлист, подборку, '
-    '«на несколько часов» — 30–50 и shuffle: true\n'
+    '«на несколько часов» — 30–50 и shuffle: true. do: "similar" — подборка похожих на трек («треки по типу X», '
+    '«в духе этого трека»): query — этот трек, count — сколько. do: "panel" — заново прислать панель управления '
+    'музыкой с кнопками\n'
     '{"type": "move", "who": "…", "to": "голосовой канал"}\n'
     '{"type": "disconnect", "who": "…"} — выкинуть из голосового канала\n'
     '{"type": "voice_mute", "who": "…", "on": true/false} — выключить или вернуть микрофон в войсе\n'
     '{"type": "timeout", "who": "…", "minutes": 0-40320} — мут в чате, 0 — снять\n'
     '{"type": "nick", "who": "…", "name": "новый ник"} — пустое имя сбрасывает ник\n'
-    '{"type": "role", "who": "…", "role": "название роли", "give": true/false}\n'
+    '{"type": "role", "who": "…", "role": "название роли", "do": "give|take"} — give выдать, take забрать (снять)\n'
     '{"type": "purge", "count": 1-50} — удалить последние сообщения в этом канале\n'
     '{"type": "kick", "who": "…", "reason": "за что"} — выгнать с сервера\n'
     '{"type": "ban", "who": "…", "reason": "за что"} — забанить (по-крупному, не за ерунду)\n'
@@ -394,6 +396,20 @@ class MindService:
                 row.ignore_reason = ignore_reason[:200]
             await s.commit()
             return row
+
+    async def warn(self, guild_id: int, user_id: int) -> int:
+        """Отметить предупреждение. Возвращает, сколько их стало за последние сутки (старые сгорают)."""
+        async with self.db.session() as s:
+            row = await s.get(BotRelation, (guild_id, user_id))
+            if row is None:
+                row = BotRelation(guild_id=guild_id, user_id=user_id, attitude=0, ignore_reason="", warnings=0)
+                s.add(row)
+            if row.warned_at is None or utcnow() - row.warned_at > timedelta(hours=24):
+                row.warnings = 0
+            row.warnings = (row.warnings or 0) + 1
+            row.warned_at = utcnow()
+            await s.commit()
+            return row.warnings
 
     # голосовая активность
     async def seen_in_voice(self, guild_id: int, user_ids: list[int], when: datetime | None = None) -> None:

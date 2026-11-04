@@ -317,20 +317,30 @@ class Listener(commands.Cog):
             return
         if not (addressed or interject):
             return
+        await self._speak_turns(guild, session, cfg, (member, how, heard, not addressed))
+
+    async def _speak_turns(self, guild: discord.Guild, session: Session, cfg: ChatterConfig,
+                           todo: tuple | None) -> None:
+        """Отвечает и затем — на всё, что накопилось, пока говорил. Ничего не теряет и никогда не зависает:
+        флаг «говорю» снимается в любом случае, ошибки пишутся в журнал."""
         session.replying = True
         try:
-            todo: tuple | None = (member, how, heard, not addressed)
             while todo is not None:
                 who, kind, heard_at, inter = todo
                 if inter:
                     session.last_decided = time.monotonic()
                 session.heard_at = heard_at
-                spoke = await self._reply(guild, session, cfg, who, interject=inter, how=kind)
+                try:
+                    spoke = await self._reply(guild, session, cfg, who, interject=inter, how=kind)
+                except Exception:  # noqa: BLE001
+                    log.exception("Слушание: ошибка ответа")
+                    spoke = False
                 if spoke:
                     session.last_spoke, session.heard_since = time.monotonic(), 0
                     session.open_until = time.monotonic() + cfg.listen_followup_seconds
-                todo = (*session.pending, False) if session.pending else None
-                session.pending = None
+                pending, session.pending = session.pending, None
+                # Устаревшее (больше 30 с) не отвечаем — к тому времени разговор ушёл дальше.
+                todo = (*pending, False) if pending and time.monotonic() - pending[2] < 30 else None
         finally:
             session.replying = False
 
@@ -463,7 +473,8 @@ class Listener(commands.Cog):
                 waited = time.monotonic()
                 while session.collector.speaking(time.monotonic()) and time.monotonic() - waited < 8:
                     await asyncio.sleep(0.1)
-                if session.pending is not None:  # человек договорил ещё что-то — ответим на всё сразу
+                if session.pending is not None and session.pending[2] > session.heard_at:
+                    # человек договорил ещё что-то после вопроса — ответим на всё сразу
                     log.info("Слушание: собеседник продолжил мысль — отвечу на всё целиком")
                     job.cancel()
                     await drain()
@@ -560,6 +571,9 @@ class Listener(commands.Cog):
                     session.last_spoke = time.monotonic()
             finally:
                 session.replying = False
+            if session.pending is not None:  # пока договаривал, к нему обратились — отвечаем
+                pending, session.pending = session.pending, None
+                await self._speak_turns(guild, session, cfg, (*pending, False))
         except asyncio.CancelledError:
             pass
         except Exception:  # noqa: BLE001

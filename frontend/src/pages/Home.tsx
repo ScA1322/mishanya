@@ -2,7 +2,8 @@ import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useApi } from "../hooks";
 import { Icon, type IconName } from "../icons";
-import { Card, Empty, ErrorBox, Loading, PageHeader, fmtBytes, fmtDate } from "../ui";
+import { errorText, get, put } from "../api";
+import { Card, Empty, ErrorBox, Loading, PageHeader, fmtBytes, fmtDate, useToast } from "../ui";
 
 interface Status {
   bot: {
@@ -76,6 +77,35 @@ const DECREES = [
   "Кто назвал Императора «Импер» без права — тот уже осуждён.",
 ];
 
+const STATUSES: [string, string, string][] = [
+  ["online", "В сети", "#23a55a"], ["idle", "Неактивен", "#f0b232"], ["dnd", "Не беспокоить", "#f23f43"], ["invisible", "Невидимка", "#80848e"],
+];
+
+/** Статус бота в Discord — переключается сразу и запоминается. */
+function StatusPicker() {
+  const toast = useToast();
+  const [status, setStatus] = useState<string | null>(null);
+  useEffect(() => { get<{ bot_status: string }>("/api/settings").then((r) => setStatus(r.bot_status)).catch(() => setStatus("online")); }, []);
+  const pick = async (v: string) => {
+    const prev = status;
+    setStatus(v);
+    try {
+      const r = await put<{ applied: boolean }>("/api/bot/status", { status: v });
+      toast("ok", r.applied ? "Статус изменён" : "Статус сохранён — применится, когда бот подключится");
+    } catch (e) { setStatus(prev); toast("err", errorText(e)); }
+  };
+  if (!status) return null;
+  return (
+    <div className="status-picker" role="radiogroup" aria-label="Статус бота">
+      {STATUSES.map(([id, name, color]) => (
+        <button key={id} type="button" role="radio" aria-checked={status === id} className={status === id ? "active" : ""} onClick={() => pick(id)}>
+          <span className="status-dot" style={{ background: color }} />{name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Шапка главной: аватар бота во вращающемся кольце, статус и «указ дня». */
 function EmperorHero({ s }: { s: Status }) {
   const b = s.bot;
@@ -99,6 +129,7 @@ function EmperorHero({ s }: { s: Status }) {
             : b.error ? "Император не может войти в Discord" : "Император просыпается…"}
         </div>
         <div className="hero-decree" key={i}>📜 {DECREES[i]}</div>
+        <StatusPicker />
       </div>
     </section>
   );

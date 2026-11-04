@@ -70,6 +70,14 @@ def _m8_sentences_dm(conn: Connection) -> None:
     Base.metadata.create_all(conn, tables=[DmContact.__table__])
 
 
+def _m9_warnings(conn: Connection) -> None:
+    cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(bot_relations)")}
+    if "warnings" not in cols:
+        conn.exec_driver_sql("ALTER TABLE bot_relations ADD COLUMN warnings INTEGER NOT NULL DEFAULT 0")
+    if "warned_at" not in cols:
+        conn.exec_driver_sql("ALTER TABLE bot_relations ADD COLUMN warned_at DATETIME")
+
+
 MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _m1_initial),
     (2, _m2_tickets_menus),
@@ -79,6 +87,7 @@ MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (6, _m6_relations),
     (7, _m7_memory_index),
     (8, _m8_sentences_dm),
+    (9, _m9_warnings),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

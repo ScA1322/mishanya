@@ -856,3 +856,11 @@ button.chip.chip-active { background: var(--accent-soft); border-color: var(--ac
 }
 .bg-select { font: inherit; font-size: 13.5px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--surface-2); color: var(--text); cursor: pointer; max-width: 170px; }
+
+/* Выбор статуса бота на главной */
+.status-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.status-picker button { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 13.5px; cursor: pointer;
+  padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); }
+.status-picker button:hover { color: var(--text); }
+.status-picker button.active { color: var(--text); border-color: var(--accent); background: rgba(var(--accent-rgb, 139, 124, 248), 0.15); }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }

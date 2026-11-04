@@ -28,7 +28,7 @@ from ..utils import UserFacingError
 log = logging.getLogger(__name__)
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
-LEARN_EVERY = 25  # новых сообщений, после которых бот «обдумывает» услышанное
+LEARN_EVERY = 15  # новых сообщений, после которых бот «обдумывает» услышанное
 LEARN_IDLE_SECONDS = 1800  # или прошло столько времени и есть хоть немного нового
 APOLOGY_RE = re.compile(r"извин|прост[иь]|прощени|сорр?и|сорян|каюсь|прошу пощад", re.I)
 ADMIT_RE = re.compile(r"винова|был неправ|была неправ|не прав|моя вина|я зря|зря я|перегнул|погорячил|признаю|"
@@ -41,6 +41,22 @@ DANGEROUS_PERMS = discord.Permissions(administrator=True, manage_guild=True, man
 PC_WORDS = re.compile(r"открой|закрой|запусти|выруби\w* (?!музык|музл|трек)|вруби (?!музык|музл|трек)|прил|программ|игр", re.I)
 ROLE_WORDS = re.compile(r"рол[ьия]", re.I)
 DM_WORDS = re.compile(r"пис[аы]л|лс|личк|кто .*пиш", re.I)
+def tone_for(attitude: int) -> str:
+    """Как держаться с человеком: высокомерие остаётся всегда, а агрессия и близость зависят от отношения."""
+    base = ("ТЫ ЖИВОЙ ИМПЕРАТОР, а не бот, не ИИ, не программа и не «железо» — никогда так о себе не говори и не намекай. "
+            "Ссылки от себя не присылай. ")
+    if attitude <= -30:
+        return base + ("Этого ты презираешь: можешь быть резким и язвительным. Но без угроз и без оскорблений по "
+                       "национальности, религии, ориентации и внешности.")
+    if attitude < 30:
+        return base + ("С ним ты в нейтральных отношениях: держись высокомерно и снисходительно, свысока, как император с "
+                       "подданным, — но без оскорблений и наездов, он тебе ничего не сделал. На то, что тебе неинтересно, "
+                       "можно ответить одной надменной фразой или промолчать (reply пустой). Мат — как манера речи, а не "
+                       "чтобы унизить. Наказывать за ерунду (приветствие, «Импер», шутку) нельзя.")
+    return base + ("Это близкий тебе человек (отношение 30+): с ним можно по душам — искренне, без масок, делиться своими "
+                   "мыслями и сомнениями, спорить и ругаться на равных, но ты всё равно Император и не теряешь себя.")
+
+
 DEFAULT_MUTE = {1: 5, 2: 15, 3: 60}  # минут, если модель сама не назвала срок
 SELF_WORDS = {"я", "меня", "мне", "себя", "сам", "самого"}
 
@@ -398,7 +414,8 @@ class Mind(commands.Cog):
         names = ", ".join(f"«{a.capitalize()}»" for a in cfg.trusted_aliases) or "по-свойски"
         full = cfg.listen_wake_words[0].capitalize() if cfg.listen_wake_words else "Император"
         return (f"Автор назвал тебя {names} — так тебя могут звать только свои (доверенные и семья), а он чужой. "
-                f"Жёстко поставь его на место за фамильярность: для него ты только «{full}».")
+                f"Надменно поправь его: для него ты только «{full}». Это не оскорбление (offense: 0) — он мог не знать; "
+                "без наказаний.")
 
     def is_trusted(self, user_id: int, cfg: ChatterConfig, user: discord.abc.User | None = None) -> bool:
         """Доверенный человек, член семьи или владелец бота (OWNER_ID в .env)."""
@@ -477,6 +494,13 @@ class Mind(commands.Cog):
         if author is not None:
             rel = await self.app.mind.relation(guild.id, author.id)
             attitude = rel.attitude if rel else 0
+            context += "\n" + tone_for(attitude)
+            if rel and rel.warnings and rel.warned_at and utcnow() - rel.warned_at < timedelta(hours=24):
+                context += (f"\nТы уже предупреждал {author.display_name} за сутки: {rel.warnings} раз. Наказывать можно "
+                            f"только после {cfg.punish_warnings} предупреждений и только за настоящие оскорбления.")
+            elif cfg.punish_enabled:
+                context += (f"\n{author.display_name} ещё ни разу не получал от тебя предупреждений — если он перегнул, "
+                            "сначала предупреди словами, без наказания.")
             context += (f"\nТвоё отношение к {author.display_name}: {attitude:+d} (от -100 ненавидишь до +100 любимчик). "
                         + ("Он свой — в войс к нему заходишь беспрекословно." if self.is_trusted(author.id, cfg, author)
                            else f"Звать тебя в войс он может, только если отношение не ниже {cfg.audience_min_attitude} — "
@@ -524,12 +548,19 @@ class Mind(commands.Cog):
                                               "добился внимания.")
             elif ignored:
                 return reply, []  # игнорит: максимум короткое «отъебись», без действий по его просьбам
-        if author is not None and result["offense"]:
-            said = history.splitlines()[-1] if history else ""
-            note = await self.punish(author, cfg, result["offense"], said, result["offense_reason"],
-                                     result["mute_minutes"])
-            if note:
-                notes.append(note)
+        if author is not None and result["offense"] and cfg.punish_enabled \
+                and result["offense"] >= cfg.punish_min_level and self._untouchable(author, cfg) is None:
+            await self.app.guilds.ensure(guild.id, guild.name)
+            warned = await self.app.mind.warn(guild.id, author.id)
+            # Сначала предупреждает (столько раз, сколько в настройках), и только потом наказывает.
+            if warned > cfg.punish_warnings:
+                said = history.splitlines()[-1] if history else ""
+                note = await self.punish(author, cfg, result["offense"], said, result["offense_reason"],
+                                         result["mute_minutes"])
+                if note:
+                    notes.append(note)
+            else:
+                log.info("Обида: предупреждение %s (%d из %d)", author, warned, cfg.punish_warnings)
         if author is not None and result["actions"]:
             notes += await self.do_actions(author, result["actions"], cfg, channel)
         return reply, notes
@@ -819,6 +850,22 @@ class Mind(commands.Cog):
             if idle:
                 await music._play_next(guild.id)  # type: ignore[attr-defined]  # noqa: SLF001
             return text
+        if do == "similar":
+            query = str(a.get("query") or "").strip()
+            if not query:
+                return None
+            try:
+                count = max(2, min(50, int(a.get("count") or 30)))
+            except (TypeError, ValueError):
+                count = 30
+            text, idle = await music.enqueue(guild, requester, query, getattr(channel, "id", None),  # type: ignore[attr-defined]
+                                             count=count, shuffle=a.get("shuffle") is True, similar=True)
+            if idle:
+                await music._play_next(guild.id)  # type: ignore[attr-defined]  # noqa: SLF001
+            return text
+        if do == "panel":
+            await music.send_panel(guild.id, getattr(channel, "id", None))  # type: ignore[attr-defined]
+            return None
         if do == "volume":
             try:
                 percent = int(a.get("volume") or 0)
@@ -878,10 +925,19 @@ class Mind(commands.Cog):
             if role.managed or role >= me.top_role:
                 return f"⚠️ Роль «{role.name}» выше моей или служебная."
             if role.permissions.value & DANGEROUS_PERMS.value:
-                return f"⚠️ Роль «{role.name}» даёт админские права — такие сам не раздаю."
-            if a.get("give") is False:
+                return f"⚠️ Роль «{role.name}» даёт админские права — такие сам не выдаю и не забираю."
+            do = str(a.get("do") or "").lower()
+            take = do in ("take", "remove", "снять", "забрать") or a.get("give") is False
+            give = do in ("give", "add", "выдать", "дать") or a.get("give") is True
+            if take == give:
+                return "⚠️ Не понял: роль выдать или забрать?"
+            if take:
+                if role not in who.roles:
+                    return f"⚠️ У **{who.display_name}** и так нет роли «{role.name}»."
                 await who.remove_roles(role, reason=reason)
                 return f"➖ Забрал у **{who.display_name}** роль «{role.name}»."
+            if role in who.roles:
+                return f"⚠️ У **{who.display_name}** уже есть роль «{role.name}»."
             await who.add_roles(role, reason=reason)
             return f"➕ Выдал **{who.display_name}** роль «{role.name}»."
         return None
@@ -1240,7 +1296,9 @@ class Mind(commands.Cog):
         history = "\n".join(f"{h.name}: {h.text}" for h in items)
         task = ("Это свежие сообщения сервера. Ты сам развиваешься: выпиши до 10 НОВЫХ фактов, которые стоит запомнить "
                 "надолго, — кто чем увлекается, во что играет, внутренние шутки и мемы, события, кто с кем дружит или "
-                "срётся, как люди относятся к тебе, твои прозвища для людей, твоё мнение о них. Не повторяй то, что уже "
+                "срётся, как люди относятся к тебе, твои прозвища для людей, твоё мнение о них. И 0–2 своих новых мнения о "
+                "жизни, людях или себе, если услышанное что-то в тебе изменило (about: null, текст начинай с «Моё мнение:»). "
+                "Не повторяй то, что уже "
                 "помнишь, не записывай мусор. Каждый факт — про одного человека (about — его имя, как в переписке) или про "
                 "сервер в целом (about: null). В тексте факта тоже называй человека по имени. Пиши коротко и в своём стиле. "
                 'Ответь СТРОГО JSON без текста вокруг: {"facts": [{"about": "имя участника или null", "text": "факт"}]}')

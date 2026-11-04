@@ -490,6 +490,7 @@ class ChatterConfig(Strict):
     # Обиды: за издевательства и оскорбления — мут и снятие ролей до извинения в отдельном канале
     punish_enabled: bool = False
     punish_min_level: int = Field(2, ge=1, le=3)  # 1 — подколы, 2 — оскорбления, 3 — только жёсткие
+    punish_warnings: int = Field(2, ge=0, le=10)  # сколько раз сначала предупредить (за сутки), прежде чем наказать
     punish_mute_minutes: int = Field(120, ge=0, le=40320)  # максимум мута; срок решает сам бот. 0 — без мута
     punish_remove_roles: bool = True
     apology_channel_id: OptSnowflake = None
@@ -594,6 +595,7 @@ class GlobalSettings(Strict):
     auto_backup_interval_hours: int = Field(24, ge=1, le=720)
     auto_backup_keep: int = Field(10, ge=1, le=200)
     bot_status_text: str = Field("/help | Mishanya", max_length=128)
+    bot_status: Literal["online", "idle", "dnd", "invisible"] = "online"  # в сети / неактивен / не беспокоить / невидимка
     auto_update_enabled: bool = True
     update_check_interval_hours: int = Field(6, ge=1, le=168)
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from itertools import islice
 from collections import deque
 import random
 import logging
@@ -10,7 +11,7 @@ import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from ...schemas import MusicConfig
 from ...services.music import (
@@ -23,6 +24,7 @@ from ...services.music import (
     format_duration,
     resolve_stream,
     search,
+    search_similar,
     voice_available,
 )
 from ..client import MishanyaBot
@@ -135,7 +137,7 @@ def np_embed(player: GuildPlayer, paused: bool) -> discord.Embed:
     if player.last_action:
         embed.add_field(name="\u200b", value=player.last_action, inline=False)
     if player.queue.tracks:
-        nxt = "\n".join(f"`{i}.` {t.title[:60]}" for i, t in enumerate(player.queue.tracks[:3], 1))
+        nxt = "\n".join(f"`{i}.` {t.title[:60]}" for i, t in enumerate(islice(player.queue.tracks, 3), 1))
         embed.add_field(name="Дальше", value=nxt, inline=False)
     return embed
 
@@ -197,9 +199,11 @@ class Music(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_dynamic_items(MusicControl)
+        self.watchdog.start()
 
     async def cog_unload(self) -> None:
         self.bot.remove_dynamic_items(MusicControl)
+        self.watchdog.cancel()
         for vc in list(self.bot.voice_clients):
             try:
                 await vc.disconnect(force=True)
@@ -283,7 +287,8 @@ class Music(commands.Cog):
             vc = self._voice(guild)
             if vc is None or vc.is_playing() or vc.is_paused():
                 return  # играет музыка — или бот сейчас говорит голосом (Listener запустит музыку после)
-            for _ in range(5):  # несколько недоступных треков подряд пропускаем
+            drm_skipped = 0
+            for _ in range(25):  # несколько недоступных треков подряд пропускаем
                 if player.skip_requested and player.queue.loop == "track":
                     player.queue.current = None  # /skip при повторе трека — к следующему
                 player.skip_requested = False
@@ -302,7 +307,10 @@ class Music(commands.Cog):
                                                        before_options=FFMPEG_BEFORE, options="-vn"))
                     source = MixedSource(audio, player.queue.volume / 100, player.overlay)
                 except MusicError as exc:
-                    await self._notify(guild, player, f"⚠️ Пропускаю «{track.title}»: {exc}")
+                    if "DRM" in str(exc):
+                        drm_skipped += 1  # защищённые треки — частое дело, не шумим о каждом
+                    else:
+                        await self._notify(guild, player, f"⚠️ Пропускаю «{track.title}»: {exc}")
                     player.queue.current = None
                     continue
                 except Exception as exc:  # noqa: BLE001
@@ -321,8 +329,11 @@ class Music(commands.Cog):
                     await self._notify(guild, player, f"❌ Не удалось включить музыку: {exc}")
                     return
                 await self._close_np(player)
+                if drm_skipped:
+                    player.last_action = f"⏭️ Пропустил защищённых треков: {drm_skipped}"
                 player.np_message = await self._notify(guild, player, embed=np_embed(player, paused=False),
                                                        view=controls_view(player, paused=False))
+                player.last_action = None
                 return
             player.queue.current = None
             self._schedule_idle(guild_id)
@@ -608,7 +619,8 @@ class Music(commands.Cog):
             await self._play_next(guild.id)
 
     async def enqueue(self, guild: discord.Guild, member: discord.Member, query: str,
-                      text_channel_id: int | None, count: int = 1, shuffle: bool = False) -> tuple[str, bool]:
+                      text_channel_id: int | None, count: int = 1, shuffle: bool = False,
+                      similar: bool = False) -> tuple[str, bool]:
         """Ищет и ставит в очередь трек от имени участника. Возвращает (текст для чата, надо ли запускать)."""
         cfg = await self._check_enabled(guild)
         if not voice_available():
@@ -616,7 +628,7 @@ class Music(commands.Cog):
         if member.voice is None or member.voice.channel is None:
             raise UserFacingError("Сначала зайдите в голосовой канал.")
         try:
-            tracks = await search(query, member.id, count)
+            tracks = await (search_similar(query, member.id, max(count, 2)) if similar else search(query, member.id, count))
             if shuffle:
                 random.shuffle(tracks)
         except MusicError as exc:
@@ -645,6 +657,41 @@ class Music(commands.Cog):
         if long:
             text += f"\nПропущено длинных треков: {len(long)}"
         return text, idle
+
+    async def send_panel(self, guild_id: int, channel_id: int | None = None) -> bool:
+        """Заново прислать панель «Сейчас играет» с кнопками (например, если её завалило сообщениями)."""
+        player = self.players.get(guild_id)
+        guild = self.bot.get_guild(guild_id)
+        if player is None or guild is None or player.queue.current is None:
+            raise UserFacingError("Сейчас ничего не играет.")
+        if channel_id:
+            player.text_channel_id = channel_id
+        vc = self._voice(guild)
+        paused = bool(vc and vc.is_paused())
+        await self._close_np(player)
+        player.np_message = await self._notify(guild, player, embed=np_embed(player, paused=paused),
+                                               view=controls_view(player, paused=paused))
+        return player.np_message is not None
+
+    @tasks.loop(seconds=6)
+    async def watchdog(self) -> None:
+        """Музыка не должна «залипать»: есть очередь, а ничего не играет — запускаем следующий трек."""
+        for guild_id, player in list(self.players.items()):
+            guild = self.bot.get_guild(guild_id)
+            vc = self._voice(guild) if guild else None
+            if vc is None or not vc.is_connected() or vc.is_playing() or vc.is_paused() or player.lock.locked():
+                continue
+            if player.queue.tracks or (player.queue.current and player.queue.loop != "off"):
+                if time.monotonic() - (player.started_at or 0) > 4:
+                    log.info("Музыка на сервере %s остановилась сама — запускаю следующий трек", guild_id)
+                    try:
+                        await self._play_next(guild_id)
+                    except Exception:  # noqa: BLE001
+                        log.exception("Музыка: не удалось продолжить")
+
+    @watchdog.before_loop
+    async def _watchdog_ready(self) -> None:
+        await self.bot.wait_until_ready()
 
     async def set_volume(self, guild_id: int, percent: int) -> None:
         guild = self.bot.get_guild(guild_id)

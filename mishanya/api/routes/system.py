@@ -337,10 +337,29 @@ async def put_settings(body: GlobalSettings, request: Request) -> dict:
     cfg = await app.config.set_global(body)
     if app.bot is not None and app.bot.is_ready():
         try:
-            await app.bot.change_presence(activity=discord.CustomActivity(name=cfg.bot_status_text))
+            await app.bot.change_presence(status=discord.Status(cfg.bot_status),
+                                          activity=discord.CustomActivity(name=cfg.bot_status_text))
         except Exception:  # noqa: BLE001
             pass
     return cfg.model_dump()
+
+
+class BotStatusIn(BaseModel):
+    status: str = Field(pattern=r"^(online|idle|dnd|invisible)$")
+
+
+@router.put("/bot/status")
+async def set_bot_status(body: BotStatusIn, request: Request) -> dict:
+    """Статус бота в Discord: в сети, неактивен, не беспокоить, невидимка. Запоминается."""
+    app = get_app(request)
+    cfg = (await app.config.get_global()).model_copy(update={"bot_status": body.status})
+    cfg = await app.config.set_global(cfg)
+    applied = False
+    if app.bot is not None and app.bot.is_ready():
+        await app.bot.change_presence(status=discord.Status(cfg.bot_status),
+                                      activity=discord.CustomActivity(name=cfg.bot_status_text))
+        applied = True
+    return {"status": cfg.bot_status, "applied": applied}
 
 
 @router.post("/maintenance/cleanup")

@@ -323,6 +323,8 @@ class BotRelation(Base):
     attitude: Mapped[int] = mapped_column(Integer, default=0)
     ignore_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ignore_reason: Mapped[str] = mapped_column(String(200), default="")
+    warnings: Mapped[int] = mapped_column(Integer, default=0)  # сколько раз предупреждал (за последние сутки)
+    warned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 

@@ -231,7 +231,8 @@ class MishanyaBot(commands.Bot):
             await self._store_guild(g)
         await self.app.guilds.mark_all_absent_except({g.id for g in self.guilds})
         settings = await self.app.config.get_global()
-        await self.change_presence(activity=discord.CustomActivity(name=settings.bot_status_text))
+        await self.change_presence(status=discord.Status(settings.bot_status),
+                                   activity=discord.CustomActivity(name=settings.bot_status_text))
 
     async def _store_guild(self, g: discord.Guild, present: bool = True) -> None:
         await self.app.guilds.upsert(g.id, g.name, g.icon.url if g.icon else None, g.member_count, present)

@@ -24,7 +24,9 @@ YDL_BASE = {
     # Прямой mp3-поток надёжнее для FFmpeg, HLS — запасной вариант.
     "format": "bestaudio[protocol^=http]/bestaudio/best",
     "socket_timeout": 15,
+    "no_color": True,  # без цветовых кодов в текстах ошибок (иначе в чат летит «[0;31mERROR:»)
 }
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
 
 
@@ -130,11 +132,34 @@ def _extract(target: str, flat: bool) -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(target, download=False) or {}
     except yt_dlp.utils.DownloadError as exc:
-        msg = str(exc).removeprefix("ERROR: ")
+        msg = ANSI_RE.sub("", str(exc)).removeprefix("ERROR: ").strip()
         log.info("yt-dlp: %s", msg)
+        if "DRM" in msg:
+            raise MusicError("трек защищён правообладателем (DRM) — SoundCloud не даёт его играть") from None
         if "404" in msg or "Unable to download JSON" in msg:
             raise MusicError("Трек не найден или недоступен (удалён, приватный или закрыт в вашей стране).") from None
         raise MusicError(f"SoundCloud не отдал трек: {msg[:200]}") from None
+
+
+async def search_similar(query: str, requester_id: int, count: int = 30) -> list[Track]:
+    """Подборка «в духе» трека: сам трек + похожие, которые советует SoundCloud."""
+    target = query if URL_RE.match(query.strip()) else classify_query(simplify_query(query) or query, 1)
+    info = await asyncio.to_thread(_extract, target, False)
+    seed = (info.get("entries") or [info])[0] if info else None
+    if not seed or not seed.get("webpage_url"):
+        raise MusicError("Ничего не найдено на SoundCloud.")
+    tracks = [_track_from_info(seed, requester_id)]
+    try:
+        related = await asyncio.to_thread(_extract, seed["webpage_url"].rstrip("/") + "/recommended", True)
+        tracks += [_track_from_info(e, requester_id) for e in (related.get("entries") or [])
+                   if e and (e.get("url") or e.get("webpage_url"))][:max(0, count - 1)]
+    except MusicError as exc:
+        log.info("Похожие треки не нашлись: %s", exc)
+    if len(tracks) < 2:  # похожих нет — хотя бы треки того же исполнителя
+        artist = seed.get("uploader") or ""
+        if artist:
+            tracks += [t for t in await search(artist, requester_id, count) if t.page_url != tracks[0].page_url]
+    return [t for t in tracks if t.page_url][:count]
 
 
 async def search(query: str, requester_id: int, count: int = 1) -> list[Track]:

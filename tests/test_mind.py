@@ -778,3 +778,25 @@ async def test_telegram_panel_api(authed, app, monkeypatch):
     assert (await authed.put("/api/telegram/keys", json={"api_id": "12", "api_hash": "x"})).status_code == 422
     r = await authed.put("/api/telegram/keys", json={"api_id": "123456", "api_hash": "a" * 32})
     assert r.status_code == 200 and "TELEGRAM_API_ID=123456" in app.settings.env_path.read_text(encoding="utf-8")
+
+
+async def test_bot_status_api(authed, app):
+    r = (await authed.put("/api/bot/status", json={"status": "dnd"})).json()
+    assert r == {"status": "dnd", "applied": False}
+    assert (await authed.get("/api/settings")).json()["bot_status"] == "dnd"
+    assert (await authed.put("/api/bot/status", json={"status": "away"})).status_code == 422
+
+
+async def test_warns_before_punishing(app, monkeypatch):
+    """Сначала предупреждения (по настройке — 2 за сутки), наказание — только после них."""
+    await app.guilds.ensure(GID, "g")
+    assert [await app.mind.warn(GID, 5) for _ in range(3)] == [1, 2, 3]
+
+
+def test_reply_never_contains_links_and_tone():
+    from mishanya.bot.cogs.mind import tone_for
+    from mishanya.services.chatter import clean_reply
+
+    assert clean_reply("Держи, холоп: https://evil.example/x и discord.gg/abc — изучай.", "Император") == \
+        "Держи, холоп: и — изучай."
+    assert "не бот" in tone_for(0) and "без оскорблений" in tone_for(0) and "по душам" in tone_for(40)

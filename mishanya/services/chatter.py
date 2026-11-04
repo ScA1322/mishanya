@@ -1,6 +1,7 @@
 """Болтовня: генерация реплик через DeepSeek (OpenAI-совместимый API) и запасные фразы."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -38,7 +39,9 @@ def clean_reply(text: str, bot_name: str) -> str:
     if text.startswith("«") and text.endswith("»"):
         text = text[1:-1].strip()
     text = text.replace("@everyone", "everyone").replace("@here", "here")
-    return text[:2000]
+    # Ссылки модель иногда выдумывает или подхватывает из контекста — от себя бот их не шлёт.
+    text = re.sub(r"(?:https?://|www\.|discord\.gg/)\S+", "", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()[:2000]
 
 
 def pick_phrase(phrases: list[str]) -> str | None:
@@ -74,6 +77,29 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
     if on_delta is not None:
         body["stream"] = True
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    for attempt in range(2):  # обрыв связи или тайм-аут — одна повторная попытка
+        streamed = {"any": False}
+
+        async def guard(piece: str) -> None:
+            streamed["any"] = True
+            await on_delta(piece)
+
+        try:
+            return await _request(base_url, body, headers, guard if on_delta else None, raw, bot_name)
+        except _NetworkError as exc:
+            if attempt == 0 and not streamed["any"]:
+                log.info("Связь с ИИ оборвалась (%s) — повторяю", exc)
+                await asyncio.sleep(1)
+                continue
+            raise ChatterError(f"Нет связи с ИИ: {exc}") from None
+    raise ChatterError("Нет связи с ИИ")
+
+
+class _NetworkError(Exception):
+    pass
+
+
+async def _request(base_url: str, body: dict, headers: dict, on_delta, raw: bool, bot_name: str) -> str:  # noqa: ANN001
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as s:
             async with s.post(f"{base_url}/chat/completions", json=body, headers=headers) as r:
@@ -107,7 +133,8 @@ async def generate(*, api_key: str, base_url: str, model: str, system_prompt: st
                 else:
                     data = await r.json(content_type=None)
     except (aiohttp.ClientError, TimeoutError) as exc:
-        raise ChatterError(f"Нет связи с DeepSeek: {exc or 'тайм-аут'}") from None
+        raise _NetworkError(f"{type(exc).__name__}{': ' + str(exc) if str(exc) else ''} "
+                            f"(сервис не ответил за {REQUEST_TIMEOUT} с или разорвал соединение)") from None
     try:
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
