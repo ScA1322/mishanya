@@ -51,6 +51,35 @@ def receive_available() -> bool:
     return voice_recv is not None and voice_available()
 
 
+def harden_voice_recv() -> bool:
+    """Битый голосовой пакет («corrupted stream») роняет поток приёма voice-recv насовсем — и бот глохнет.
+    Подменяем декодер: такой пакет превращается в 20 мс тишины, а декодер пересоздаётся."""
+    if voice_recv is None:
+        return False
+    from discord.ext.voice_recv import opus as vr_opus
+    from discord.opus import Decoder, OpusError
+
+    cls = vr_opus.PacketDecoder
+    if getattr(cls, "_mishanya_safe", False):
+        return True
+    original = cls._decode_packet
+
+    def safe_decode(self, packet):  # noqa: ANN001, ANN202
+        try:
+            return original(self, packet)
+        except OpusError as exc:
+            log.debug("Слушание: битый голосовой пакет (%s) — заменяю тишиной", exc)
+            try:
+                self._decoder = Decoder()  # испорченное состояние декодера — начинаем с чистого
+            except Exception:  # noqa: BLE001
+                pass
+            return packet, bytes(FRAME)
+
+    cls._decode_packet = safe_decode
+    cls._mishanya_safe = True
+    return True
+
+
 def install_dave_decrypt(vc) -> None:  # noqa: ANN001 — VoiceRecvClient
     """Встраивает расшифровку DAVE в приём voice-recv (он её не поддерживает)."""
     import davey
@@ -194,6 +223,7 @@ class Listener(commands.Cog):
         cfg = await self._cfg(guild.id)
         session = Session(vc=vc, channel_id=channel.id, started=time.monotonic(),
                           collector=UtteranceCollector(end_silence=cfg.listen_end_silence_ms / 1000))
+        harden_voice_recv()
         vc.listen(CollectorSink(session.collector))  # type: ignore[attr-defined]
         install_dave_decrypt(vc)
         self.sessions[guild.id] = session
@@ -239,6 +269,14 @@ class Listener(commands.Cog):
                 if now - session.started > cfg.listen_max_minutes * 60:
                     await self.stop(guild_id, f"прошло {cfg.listen_max_minutes} мин")
                     return
+                if not vc.is_listening():  # type: ignore[attr-defined]
+                    # Поток приёма звука упал (например, на битом пакете) — поднимаем его заново, не выходя из канала.
+                    log.warning("Слушание: приём звука остановился — перезапускаю")
+                    try:
+                        vc.listen(CollectorSink(session.collector))  # type: ignore[attr-defined]
+                        install_dave_decrypt(vc)
+                    except Exception:  # noqa: BLE001
+                        log.exception("Слушание: не удалось перезапустить приём звука")
                 humans = [m for m in vc.channel.members if not m.bot]
                 if not humans:
                     session.alone_since = session.alone_since or now

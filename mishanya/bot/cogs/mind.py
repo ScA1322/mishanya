@@ -34,9 +34,10 @@ APOLOGY_RE = re.compile(r"извин|прост[иь]|прощени|сорр?и
 ADMIT_RE = re.compile(r"винова|был неправ|была неправ|не прав|моя вина|я зря|зря я|перегнул|погорячил|признаю|"
                       r"не должен был|не стоило", re.I)
 # Роли с такими правами бот сам не выдаёт, кто бы ни просил.
+# Только по-настоящему админские права: с ними можно захватить сервер. Модераторские (мут, удаление сообщений,
+# упоминание @everyone) сюда не входят — иначе бот считал «админской» почти любую роль.
 DANGEROUS_PERMS = discord.Permissions(administrator=True, manage_guild=True, manage_roles=True, ban_members=True,
-                                      kick_members=True, manage_channels=True, manage_webhooks=True,
-                                      mention_everyone=True, moderate_members=True, manage_messages=True)
+                                      kick_members=True, manage_channels=True, manage_webhooks=True)
 # Голосом запрос к ИИ облегчается; эти слова показывают, что лёгкого не хватит.
 PC_WORDS = re.compile(r"открой|закрой|запусти|выруби\w* (?!музык|музл|трек)|вруби (?!музык|музл|трек)|прил|программ|игр", re.I)
 ROLE_WORDS = re.compile(r"рол[ьия]", re.I)
@@ -924,13 +925,14 @@ class Mind(commands.Cog):
                 return f"⚠️ Не нашёл роль «{a.get('role')}»."
             if role.managed or role >= me.top_role:
                 return f"⚠️ Роль «{role.name}» выше моей или служебная."
-            if role.permissions.value & DANGEROUS_PERMS.value:
-                return f"⚠️ Роль «{role.name}» даёт админские права — такие сам не выдаю и не забираю."
             do = str(a.get("do") or "").lower()
             take = do in ("take", "remove", "снять", "забрать") or a.get("give") is False
             give = do in ("give", "add", "выдать", "дать") or a.get("give") is True
             if take == give:
                 return "⚠️ Не понял: роль выдать или забрать?"
+            # Забрать можно любую роль ниже роли бота; выдавать сам не будет только админские.
+            if give and role.permissions.value & DANGEROUS_PERMS.value:
+                return f"⚠️ Роль «{role.name}» даёт админские права — такие сам не выдаю."
             if take:
                 if role not in who.roles:
                     return f"⚠️ У **{who.display_name}** и так нет роли «{role.name}»."

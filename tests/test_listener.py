@@ -319,3 +319,23 @@ async def test_never_stuck_after_interruptions(monkeypatch):
     assert answered == ["first", "second"] and session.pending is None and session.replying is False
     await cog._speak_turns(None, session, ChatterConfig(), (None, "boom", L.time.monotonic(), False))
     assert session.replying is False  # даже после ошибки бот продолжит слушать и отвечать
+
+
+def test_corrupted_voice_packet_does_not_kill_receiving():
+    """«OpusError: corrupted stream» больше не роняет поток приёма звука: битый пакет становится тишиной."""
+    from discord.ext.voice_recv import opus as vr_opus
+    from discord.opus import OpusError
+
+    from mishanya.bot.cogs import listener as L
+
+    assert L.harden_voice_recv() is True and L.harden_voice_recv() is True  # повторно — без двойной обёртки
+
+    class Broken:
+        def decode(self, data, fec=False):  # noqa: ANN001, ARG002
+            raise OpusError.__new__(OpusError)  # «corrupted stream» (без загрузки libopus)
+
+    dec = vr_opus.PacketDecoder.__new__(vr_opus.PacketDecoder)
+    dec._decoder = Broken()
+    packet = SimpleNamespace(decrypted_data=b"junk", __bool__=lambda self: True)
+    pkt, pcm = vr_opus.PacketDecoder._decode_packet(dec, packet)
+    assert pcm == bytes(L.FRAME)

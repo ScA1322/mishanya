@@ -800,3 +800,14 @@ def test_reply_never_contains_links_and_tone():
     assert clean_reply("Держи, холоп: https://evil.example/x и discord.gg/abc — изучай.", "Император") == \
         "Держи, холоп: и — изучай."
     assert "не бот" in tone_for(0) and "без оскорблений" in tone_for(0) and "по душам" in tone_for(40)
+
+
+async def test_moderator_roles_are_not_admin(app, monkeypatch):
+    """Роль с модераторскими правами (удалять сообщения, @everyone) — не «админская»: снять и выдать можно."""
+    import discord as _d
+
+    from mishanya.bot.cogs.mind import DANGEROUS_PERMS
+
+    mod = _d.Permissions(manage_messages=True, mention_everyone=True, moderate_members=True)
+    assert not (mod.value & DANGEROUS_PERMS.value)
+    assert _d.Permissions(administrator=True).value & DANGEROUS_PERMS.value
